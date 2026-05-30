@@ -14,13 +14,28 @@ auto-updates if already installed (the app checks `updateUrl` every 24h).
 
 ## Develop & Release
 
-1. Edit `index.js` / `manifest.json`. Bump `version` in `manifest.json`.
-2. Add a section to `CHANGELOG.md` (top-most `## vX.Y.Z` heading).
-3. Build artifacts: `scripts/package.sh` → produces `spotify.zip` + `update.json`.
+For every release: edit `index.js` / `manifest.json`, **bump `version` in
+`manifest.json`**, and add a `## vX.Y.Z` section at the top of `CHANGELOG.md`.
+Then publish via CI (preferred) or manually.
+
+### Release via CI (preferred)
+
+A GitHub Actions workflow (`.github/workflows/release.yml`) builds and publishes
+the release. It verifies the `manifest.json` version matches the release version
+and that the zip has `manifest.json` at its root, then attaches `spotify.zip` +
+`update.json`. Two ways to trigger it:
+
+- **Push a tag:** after committing the version bump + changelog, run
+  `git tag vX.Y.Z && git push origin vX.Y.Z`.
+- **Manual dispatch:** GitHub → Actions → *Release* → *Run workflow*, enter the
+  version (must equal `manifest.json`). CI creates the tag for you.
+
+### Release manually (fallback)
+
+1. `scripts/package.sh` → produces `spotify.zip` + `update.json`.
    - The zip MUST contain `manifest.json` at its root (the script guarantees this;
      verify via the printed `unzip -l`).
-4. Publish:
-   `gh release create vX.Y.Z spotify.zip update.json --repo outcast1000/viboplr-spotify --title "vX.Y.Z" --notes-file CHANGELOG.md`
+2. `gh release create vX.Y.Z spotify.zip update.json --repo outcast1000/viboplr-spotify --title "vX.Y.Z" --notes-file CHANGELOG.md`
 
 The update endpoint is the permanent
 `https://github.com/outcast1000/viboplr-spotify/releases/latest/download/update.json`.
