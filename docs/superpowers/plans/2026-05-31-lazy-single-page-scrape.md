@@ -91,6 +91,7 @@ Replace with:
       coverVersion: pl.coverVersion || null,
       lastSyncedAt: pl.lastSyncedAt || null,
       tracksFetchedAt: pl.tracksFetchedAt || null,
+      cardSubtitle: pl.cardSubtitle || "",
     }).catch(function (e) { console.error("Failed to write meta:", pl.id, e); });
 ```
 
@@ -112,6 +113,7 @@ Replace with:
             uri: "spotify://playlists/" + meta.id,
             lastSyncedAt: meta.lastSyncedAt || null,
             tracksFetchedAt: meta.tracksFetchedAt || null,
+            cardSubtitle: meta.cardSubtitle || "",
           };
 ```
 
@@ -283,10 +285,11 @@ Insert just before `function scriptNavigatePlaylist(id)` (~line 1753):
 ```javascript
   // Scrape all playlist cards on the music-chip home page, grouped by shelf.
   // Strategy: scroll to bottom to materialize lazy shelves, then for each shelf
-  // container (section / heading + card row) read the heading text and collect
-  // a[href*="/playlist/"] cards within it. Dedupe by playlist id across shelves
-  // (first shelf wins as the section). Sends a "shelves" message:
-  //   { shelves: [{ section, playlists: [{id,name,imageUrl}] }], total }
+  // container (section / heading + card row) read the heading text + description
+  // and collect a[href*="/playlist/"] cards within it (with each card's subtitle
+  // text). Dedupe by playlist id across shelves (first shelf wins as the
+  // section). Sends a "shelves" message:
+  //   { shelves: [{ section, description, playlists: [{id,name,subtitle,imageUrl}] }], total }
   var SCRIPT_SCRAPE_SHELVES = '(function(){try{' +
     DBG_HELPER +
     IMG_HELPER +
@@ -298,6 +301,32 @@ Insert just before `function scriptNavigatePlaylist(id)` (~line 1753):
       'var aria=sec.getAttribute("aria-label");' +
       'return aria?aria.trim():"";' +
     '}' +
+    // Shelf description: the gray text line near the heading. Heuristic — the
+    // first <p> or <span> in the shelf whose text differs from the heading and
+    // isn't itself a card subtitle (not inside a playlist link). Best-effort.
+    'function shelfDescription(sec,title){' +
+      'var cands=sec.querySelectorAll("p,span");' +
+      'for(var d=0;d<cands.length;d++){' +
+        'var c=cands[d];' +
+        'if(c.closest("a[href*=\\"/playlist/\\"]"))continue;' +
+        'var t=(c.textContent||"").trim();' +
+        'if(t&&t!==title&&t.length>10&&t.length<200)return t;' +
+      '}' +
+      'return "";' +
+    '}' +
+    // Card subtitle: walk up from the playlist link to the card container, then
+    // take the first text that differs from the card name. Best-effort.
+    'function cardSubtitle(la,nm){' +
+      'var card=la;' +
+      'for(var up=0;up<5&&card;up++){if(card.parentElement)card=card.parentElement;else break;}' +
+      'if(!card)return "";' +
+      'var cands=card.querySelectorAll("p,span");' +
+      'for(var i=0;i<cands.length;i++){' +
+        'var t=(cands[i].textContent||"").trim();' +
+        'if(t&&t!==nm&&nm.indexOf(t)===-1&&t.indexOf(nm)===-1&&t.length<200)return t;' +
+      '}' +
+      'return "";' +
+    '}' +
     'function collect(){' +
       'var main=document.querySelector("main")||document.body;' +
       // Shelf containers: <section> elements are how Spotify groups home shelves.
@@ -308,6 +337,7 @@ Insert just before `function scriptNavigatePlaylist(id)` (~line 1753):
       'for(var s=0;s<sections.length;s++){' +
         'var sec=sections[s];' +
         'var title=shelfHeading(sec)||("Section "+(s+1));' +
+        'var descr=shelfDescription(sec,title);' +
         'var links=sec.querySelectorAll("a[href*=\\"/playlist/\\"]");' +
         'var pls=[];' +
         'for(var i=0;i<links.length;i++){' +
@@ -317,9 +347,10 @@ Insert just before `function scriptNavigatePlaylist(id)` (~line 1753):
           'var nm=(la.textContent||"").trim();' +
           'if(!nm)continue;' +
           'var img=findImgContainer(la);' +
-          'pls.push({id:m[1],name:nm,imageUrl:img});total++;' +
+          'var sub=cardSubtitle(la,nm);' +
+          'pls.push({id:m[1],name:nm,subtitle:sub,imageUrl:img});total++;' +
         '}' +
-        'if(pls.length>0)shelves.push({section:title,playlists:pls});' +
+        'if(pls.length>0)shelves.push({section:title,description:descr,playlists:pls});' +
       '}' +
       '_dbg("shelves","DONE",{shelfCount:shelves.length,total:total});' +
       'window.__viboplr.send("shelves",{shelves:shelves,total:total});' +
@@ -357,7 +388,7 @@ git commit -m "feat: add SCRIPT_SCRAPE_SHELVES single-page shelf scraper"
 **Files:**
 - Modify: `index.js` — add after `withSpotifyWindow` (Task 2's function, ~line 1898 region).
 
-Produces the same result shape the old code used (`{ playlists, tracks }`), but `tracks` is always `{}` (no eager track scraping) and `playlists` carry their derived `section`. Reuses `beginReport`/`finishReport` for diagnostics.
+Produces `{ playlists, sections, sectionDescriptions }`. No tracks are scraped (those are lazy). Each playlist carries its derived `section` and the scraped `cardSubtitle` (shown on the card until tracks are fetched). `sectionDescriptions` maps section name → shelf description string. Reuses `beginReport`/`finishReport` for diagnostics.
 
 - [ ] **Step 1: Add `syncPlaylists`**
 
@@ -365,35 +396,40 @@ Insert right after the closing `}` of `withSpotifyWindow`:
 
 ```javascript
   // New single-page sync: scrape the music-chip home page once, grouping
-  // playlists by shelf. Resolves { playlists, sections } (no tracks — those are
-  // fetched lazily). Resolves null if cancelled / not signed in.
+  // playlists by shelf. Resolves { playlists, sections, sectionDescriptions }
+  // (no tracks — those are fetched lazily). Resolves null if cancelled / not
+  // signed in.
   function syncPlaylists(visible, trigger) {
     beginReport(trigger || "sync", ["(music-chip home)"]);
     return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible }, function (h, ctx) {
       return new Promise(function (resolve) {
         // Give the SPA a moment to render the home shell before scraping.
         var done = false;
-        function finishScrape(playlists, sections) {
+        function finishScrape(playlists, sections, sectionDescriptions) {
           if (done) return;
           done = true;
-          resolve({ playlists: playlists, sections: sections });
+          resolve({ playlists: playlists, sections: sections, sectionDescriptions: sectionDescriptions || {} });
         }
 
         ctx.setHandler(function (msg) {
           if (msg.type === "error" && msg.data) {
             plog("warn", "shelves", "scrape error: " + msg.data.message);
-            finishScrape([], []);
+            finishScrape([], [], {});
             return;
           }
           if (msg.type === "shelves" && msg.data && Array.isArray(msg.data.shelves)) {
             var shelves = msg.data.shelves;
             var playlists = [];
             var sections = [];
+            var sectionDescriptions = {};
             var seen = {};
             for (var si = 0; si < shelves.length; si++) {
               var sec = shelves[si];
               var name = sec.section || ("Section " + (si + 1));
-              if (sections.indexOf(name) === -1) sections.push(name);
+              if (sections.indexOf(name) === -1) {
+                sections.push(name);
+                if (sec.description) sectionDescriptions[name] = sec.description;
+              }
               for (var pi = 0; pi < sec.playlists.length; pi++) {
                 var raw = sec.playlists[pi];
                 if (seen[raw.id]) continue;
@@ -403,6 +439,7 @@ Insert right after the closing `}` of `withSpotifyWindow`:
                   name: raw.name,
                   section: name,
                   description: "",
+                  cardSubtitle: raw.subtitle || "",
                   imageUrl: raw.imageUrl || null,
                   coverVersion: null,
                   uri: "spotify://playlists/" + raw.id,
@@ -412,17 +449,17 @@ Insert right after the closing `}` of `withSpotifyWindow`:
               }
             }
             dbg("flow", "music-chip scrape: " + playlists.length + " playlists across " + sections.length + " shelves");
-            finishScrape(playlists, sections);
+            finishScrape(playlists, sections, sectionDescriptions);
           }
         });
 
         // Navigate to the music-chip page (the window opened there already, but
         // re-assert in case login redirected away), then scrape after render.
         setTimeout(function () {
-          if (ctx.isStale()) { finishScrape([], []); return; }
+          if (ctx.isStale()) { finishScrape([], [], {}); return; }
           h.eval('window.location.href=' + JSON.stringify(MUSIC_CHIP_URL));
           setTimeout(function () {
-            if (ctx.isStale()) { finishScrape([], []); return; }
+            if (ctx.isStale()) { finishScrape([], [], {}); return; }
             h.eval(SCRIPT_SCRAPE_SHELVES);
           }, 4000);
         }, 1000);
@@ -622,6 +659,7 @@ Insert immediately above `silentRefresh` (just before its `function silentRefres
       if (old) {
         np.tracksFetchedAt = old.tracksFetchedAt || null;
         if (!np.imageUrl && old.imageUrl) np.imageUrl = old.imageUrl;
+        if (!np.cardSubtitle && old.cardSubtitle) np.cardSubtitle = old.cardSubtitle;
       }
       newKeyed[playlistDir(np).join("/")] = true;
     }
@@ -639,17 +677,17 @@ Insert immediately above `silentRefresh` (just before its `function silentRefres
     state.playlists = newPlaylists;
     state.playlistTracks = survivingTracks;
     state.sections = result.sections;
-    if (state.activeTab.indexOf("section:") === 0) {
-      var cur = state.activeTab.substring(8);
-      if (state.sections.indexOf(cur) === -1) {
-        state.activeTab = state.sections.length > 0 ? "section:" + state.sections[0] : "section:";
-      }
-    } else if (state.sections.length > 0) {
-      state.activeTab = "section:" + state.sections[0];
-    }
+    state.sectionDescriptions = result.sectionDescriptions || {};
+    // Persist the derived section list + descriptions as a cold-start render
+    // cache (so headings/order show before the first sync of a new session).
+    api.storage.set("spotify_browse_sections", state.sections).catch(console.error);
+    api.storage.set("spotify_browse_section_descriptions", state.sectionDescriptions).catch(console.error);
     saveState();
   }
 ```
+
+> Note: there is no `activeTab` to reconcile — the view renders all shelves
+> stacked (Task 10), so a changing shelf set needs no extra state.
 
 - [ ] **Step 3: Rewrite the `sync` action**
 
@@ -716,6 +754,9 @@ In the `state` object (~line 10-36), add after `playlistSearch: {},`:
     // Playlist id currently being lazily track-scraped (for the detail-view
     // loading state). Null when idle.
     loadingTracksFor: null,
+    // Section name -> shelf description (gray text under the heading), from the
+    // last scrape. Cold-start cache loaded at init.
+    sectionDescriptions: {},
 ```
 
 - [ ] **Step 2: Make the detail view auto-fetch on open**
@@ -776,6 +817,31 @@ Replace with:
     } else {
       ch.push({ type: "text", content: "<p style='opacity:0.5'>No tracks scraped</p>" });
     }
+```
+
+- [ ] **Step 3b: Show the scraped `cardSubtitle` on cards until tracks load**
+
+In `buildPlaylistCards` (~line 894), find the subtitle construction:
+
+```javascript
+      var ts = state.playlistTracks[sp.id];
+      var sub = ts ? ts.length + " tracks" : (sp.description || "");
+      if (sp.lastSyncedAt) sub += " · synced " + formatSyncTime(sp.lastSyncedAt);
+```
+
+Replace with:
+
+```javascript
+      var ts = state.playlistTracks[sp.id];
+      // Before tracks are fetched, show the scraped card subtitle (e.g. "With
+      // X, Y…"). After a fetch, show the track count + synced stamp.
+      var sub;
+      if (ts && ts.length > 0) {
+        sub = ts.length + " tracks";
+        if (sp.lastSyncedAt) sub += " · synced " + formatSyncTime(sp.lastSyncedAt);
+      } else {
+        sub = sp.cardSubtitle || sp.description || "";
+      }
 ```
 
 - [ ] **Step 4: Make `play-current` / `enqueue-current` lazy**
@@ -1076,10 +1142,15 @@ In the sections loader (~line 3190-3204), replace the whole `.then` body:
 with:
 
 ```javascript
-  // Sections are now derived from the scrape, but we keep the last-known list as
-  // a cold-start render cache so tabs show before the first sync completes.
+  // Sections are now derived from the scrape, but we keep the last-known list +
+  // descriptions as a cold-start render cache so shelves show before the first
+  // sync of a session completes.
   api.storage.get("spotify_browse_sections").then(function(sections) {
     if (sections && Array.isArray(sections)) state.sections = sections;
+    render();
+  }).catch(console.error);
+  api.storage.get("spotify_browse_section_descriptions").then(function(descs) {
+    if (descs && typeof descs === "object") state.sectionDescriptions = descs;
   }).catch(console.error);
 
   // One-time cleanup: remove the old Liked Songs on-disk directory and its
@@ -1104,84 +1175,64 @@ git commit -m "refactor: remove Liked Songs synthetic playlist entirely"
 
 ---
 
-## Task 10: Remove user-configured-section UI + actions; make tabs read-only
+## Task 10: Replace tabs with stacked sections; remove section-config UI + actions
 
 **Files:**
-- Modify: `index.js` — `buildTabs` (~line 862, drop the `+` tab), `renderHome` (~line 944-960, drop "Remove Section" + add-section input), all section-config actions (~line 2658-2731, 2930-2977), `pendingSectionInput` (~line 8).
+- Modify: `index.js` — `renderHome` (~line 935-999, rewrite to stack sections), `buildTabs` (~line 862-871, delete), all section-config actions (~line 2658-2731, 2930-2977), `switch-tab` (~line 2685), `pendingSectionInput` (~line 8), `state.activeTab` / `state.addingSectionViaTab` (~line 20, 30).
 
-- [ ] **Step 1: Drop the `+` tab in `buildTabs`**
+The view changes from "toolbar + tabs + one section's grid" to "toolbar + every shelf stacked (heading + card-grid), top to bottom." This removes all tab and active-tab state.
 
-Replace `buildTabs` (~line 862-871) with:
+- [ ] **Step 1: Rewrite `renderHome` to stack all sections**
 
-```javascript
-  function buildTabs() {
-    var tabs = [];
-    for (var i = 0; i < state.sections.length; i++) {
-      var sec = state.sections[i];
-      var secPlaylists = getPlaylistsForSection(sec);
-      tabs.push({ id: "section:" + sec, label: sec, count: secPlaylists.length || undefined });
-    }
-    return tabs;
-  }
-```
-
-- [ ] **Step 2: Drop the per-section "Remove Section" toolbar + add-section input in `renderHome`**
-
-In `renderHome` (~line 943-992), replace the section-actions block:
+Replace the entire `renderHome` function (~line 935-999) with:
 
 ```javascript
-      if (!isActive) {
-        var sectionActions = [];
-        // Liked Songs is a built-in collection — don't allow removal.
-        if (!isLikedSection(sectionName)) {
-          sectionActions.push({ type: "button", label: "Remove Section", action: "remove-section-tab", variant: "secondary", style: { "font-size": "var(--fs-xs)", "padding": "3px 10px" }, data: { section: sectionName } });
-        }
-        if (state.status !== "idle") {
-          sectionActions.unshift(
-            { type: "button", label: "Refresh " + sectionName, action: "refresh-section", variant: "secondary", disabled: state.refreshing, style: { "font-size": "var(--fs-xs)", "padding": "3px 10px" }, data: { section: sectionName } }
-          );
-        }
-        if (sectionActions.length > 0) {
-          ch.push({
-            type: "layout", direction: "horizontal", style: { "margin-bottom": "8px", "gap": "8px" },
-            children: sectionActions,
-          });
-        }
+  function renderHome() {
+    api.ui.setBadge("spotify", null);
+    var isActive = isActiveStatus();
+
+    var toolbar = buildToolbar();
+    toolbar.buttons.push({ label: state.showBrowserOnRefresh ? "Browser: ON" : "Browser: OFF", action: "toggle-show-browser-pref", variant: state.showBrowserOnRefresh ? "accent" : "secondary" });
+    var view = [toolbar];
+
+    // Empty state: nothing scraped yet.
+    if (state.sections.length === 0) {
+      if (!isActive && state.status === "idle") {
+        view.push({ type: "text", content: "<p style='opacity:0.5;padding:16px'>No playlists yet. Click <b>Sync</b> to scrape your Spotify Music home.</p>" });
       }
-```
+      api.ui.setViewData("spotify", { type: "layout", direction: "vertical", children: view });
+      return;
+    }
 
-with: *(nothing — delete the entire block; sections are no longer user-managed and there's no per-section refresh)*
-
-Then delete the add-section input block (~line 983-992):
-
-```javascript
-    if (state.addingSectionViaTab) {
-      ch.unshift({
-        type: "layout", direction: "horizontal", style: { "gap": "8px", "margin": "0 0 8px 0", "align-items": "center" },
+    // One stacked block per shelf: heading (+ description) + card-grid.
+    for (var i = 0; i < state.sections.length; i++) {
+      var sectionName = state.sections[i];
+      var secPlaylists = getPlaylistsForSection(sectionName);
+      if (secPlaylists.length === 0) continue;
+      var headerHtml = "<h3 style='margin:0 0 2px;font-size:var(--fs-md)'>" + escapeHtml(sectionName) + "</h3>";
+      var descr = state.sectionDescriptions[sectionName];
+      if (descr) headerHtml += "<p style='margin:0 0 6px;font-size:var(--fs-xs);color:var(--text-secondary)'>" + escapeHtml(descr) + "</p>";
+      view.push({
+        type: "layout", direction: "vertical", style: { "padding": "12px 16px 0" },
         children: [
-          { type: "text-input", placeholder: "Section name (e.g. Your Top Mixes)", action: "section-tab-input" },
-          { type: "button", label: "Add", action: "add-section-tab", variant: "accent", style: { "font-size": "var(--fs-xs)", "padding": "3px 10px" } },
-          { type: "button", label: "Cancel", action: "cancel-add-section", variant: "secondary", style: { "font-size": "var(--fs-xs)", "padding": "3px 10px" } },
+          { type: "text", content: headerHtml },
+          { type: "card-grid", items: buildPlaylistCards(secPlaylists) },
         ],
       });
     }
+
+    api.ui.setViewData("spotify", { type: "layout", direction: "vertical", children: view });
+  }
 ```
 
-- [ ] **Step 3: Simplify `switch-tab` (no more `__add__`)**
+- [ ] **Step 2: Delete `buildTabs`**
 
-Replace `api.ui.onAction("switch-tab", ...)` (~line 2685-2695) with:
+Delete the entire `buildTabs` function (~line 862-871). It is no longer referenced.
 
-```javascript
-  api.ui.onAction("switch-tab", function(data) {
-    if (!data || !data.tabId) return;
-    state.activeTab = data.tabId;
-    render();
-  });
-```
-
-- [ ] **Step 4: Delete all section-config actions**
+- [ ] **Step 3: Delete `switch-tab` and all section-config actions**
 
 Delete these blocks entirely:
+- `api.ui.onAction("switch-tab", ...)` (~line 2685-2695)
 - `api.ui.onAction("remove-section-tab", ...)` (~line 2658-2683)
 - `api.ui.onAction("section-tab-input", ...)` (~line 2697-2701)
 - `api.ui.onAction("section-tab-input:submit", ...)` (~line 2703-2706)
@@ -1193,28 +1244,31 @@ Delete these blocks entirely:
 - `api.ui.onAction("add-section", ...)` (~line 2950-2961)
 - `api.ui.onAction("remove-section", ...)` (~line 2963-2977)
 
-- [ ] **Step 5: Remove `pendingSectionInput` and `addingSectionViaTab`**
+- [ ] **Step 4: Remove now-dead state**
 
-Delete `var pendingSectionInput = "";` (~line 8). In the `state` object, delete `addingSectionViaTab: false,` (~line 30).
+- Delete `var pendingSectionInput = "";` (~line 8).
+- In the `state` object: delete `activeTab: "section:Made for You",` (~line 20) and `addingSectionViaTab: false,` (~line 30).
 
-- [ ] **Step 6: Syntax gate + dangling-ref grep**
+> `state.activeTab` is referenced only by the deleted tab code and `applySyncResult` (already cleaned in Task 6) — the next step's grep confirms none remain.
+
+- [ ] **Step 5: Syntax gate + dangling-ref grep**
 
 Run: `node --check index.js`
 Expected: exits 0.
 
-Run: `grep -n "pendingSectionInput\|addingSectionViaTab\|remove-section\|add-section\|section-tab-input\|section-input\|cancel-add-section\|__add__" index.js`
-Expected: **no output**.
+Run: `grep -n "pendingSectionInput\|addingSectionViaTab\|activeTab\|buildTabs\|remove-section\|add-section\|section-tab-input\|section-input\|cancel-add-section\|switch-tab\|__add__\|type: \"tabs\"" index.js`
+Expected: **no output**. (If `activeTab` still appears, find its reference and remove it — nothing should read it anymore.)
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add index.js
-git commit -m "refactor: remove user-configured-section UI; tabs derived from scrape"
+git commit -m "feat: replace section tabs with vertically stacked shelves"
 ```
 
 **[MANUAL CHECKPOINT]** — Reload in host. Verify:
-- Tabs show one per scraped shelf; there is **no** `+` tab and no "Remove Section" / "Refresh [section]" buttons.
-- Switching tabs filters the grid by shelf.
+- The view shows each scraped shelf as a heading with its card-grid beneath, stacked vertically. **No** tab bar, no `+` tab, no "Remove Section" / "Refresh [section]" buttons.
+- Scrolling shows every shelf.
 - Auto-refresh (set a short interval in Settings, or trigger via host) re-scrapes the list only — no track windows pop.
 
 ---
@@ -1314,10 +1368,11 @@ git commit -m "refactor: adapt step debugger to scrape-shelves step"
 
 Update `SPEC.md` to reflect the new model. Specifically:
 - **Purpose / Architecture:** sync scrapes one page (`home?facet=music-chip`) grouped by shelf; tracks are lazy + 24h-cached.
-- **Scraping Flow:** replace Phases 2-4 with: "Phase 2: Single-page shelf scrape (`SCRIPT_SCRAPE_SHELVES`)" and "On-demand track fetch (`ensureTracks`)". Remove the section-finder, Music-button fallback, and eager track phase descriptions.
-- **Data Model:** add `tracksFetchedAt` to the meta fields; remove the Liked Songs row and the `spotify_browse_sections` "configured section names" semantics (now a derived render cache).
-- **Injected Scripts table:** remove `scriptFindSection`, `SCRIPT_SCRAPE_PLAYLISTS`; add `SCRIPT_SCRAPE_SHELVES`. Keep `scriptScrollThenScrape`.
-- **Known Limitations:** add the two accepted v1 risks (lazy shelf rendering may capture only first ~10 cards per shelf; first Play/View of an uncached playlist pays full scrape latency).
+- **UI Structure:** replace the "Tabs / Section Tab Content" description with "stacked sections" — the panel renders each shelf as a heading (+ gray description) followed by a card-grid, vertically, mirroring the Spotify Music home page. Remove the toolbar's per-section Refresh/Remove and the `+` tab.
+- **Scraping Flow:** replace Phases 2-4 with: "Phase 2: Single-page shelf scrape (`SCRIPT_SCRAPE_SHELVES`)" capturing per-shelf heading + description and per-card name + subtitle + cover, and "On-demand track fetch (`ensureTracks`)". Remove the section-finder, Music-button fallback, and eager track phase descriptions.
+- **Data Model:** add `tracksFetchedAt` and `cardSubtitle` to the meta fields; add the `spotify_browse_section_descriptions` storage key; remove the Liked Songs row and change the `spotify_browse_sections` semantics from "configured section names" to "derived render cache".
+- **Injected Scripts table:** remove `scriptFindSection`, `SCRIPT_SCRAPE_PLAYLISTS`, `SCRIPT_CLICK_MUSIC`; add `SCRIPT_SCRAPE_SHELVES`. Keep `scriptScrollThenScrape`.
+- **Known Limitations:** add the two accepted v1 risks (lazy shelf rendering may capture only first ~10 cards per shelf; first Play/View of an uncached playlist pays full scrape latency). Note that station/album/artist cards (e.g. the "Recommended Stations" shelf) are intentionally skipped.
 
 Make these edits directly in `SPEC.md` matching its existing heading structure.
 
@@ -1329,8 +1384,11 @@ Prepend a new section to `CHANGELOG.md` (above the current top entry):
 ## v1.12.0
 
 - Sync now scrapes the Music home page (`home?facet=music-chip`) in a single
-  pass, grouping playlists by shelf. Removed the fragile section-finder and
+  pass, showing every shelf as a stacked heading + card grid (mirroring the
+  Spotify page). Removed the fragile section-finder, the section tabs, and
   per-section configuration.
+- Cards now show their Spotify subtitle and shelves their description text, so
+  the panel looks populated before any tracks are fetched.
 - Tracks are now fetched lazily on View/Play/Enqueue and cached for 24h
   (added a "Refresh tracks" card action to force a re-scrape).
 - Removed the Liked Songs synthetic playlist.
@@ -1360,12 +1418,12 @@ git commit -m "docs: update SPEC + CHANGELOG for lazy single-page scrape (v1.12.
 ```
 
 **[MANUAL CHECKPOINT — full acceptance]** — Reload in host and run the full flow one more time:
-1. Fresh **Sync** → fast, grid grouped by shelf, no track windows.
-2. **View** a playlist → loading state → tracklist.
+1. Fresh **Sync** → fast; shelves render stacked (heading + description + card grid), no track windows. Cards show their Spotify subtitle text.
+2. **View** a playlist → loading state → tracklist (card subtitle replaced by track count).
 3. **Play** from a card → fetch notification → playback; repeat → instant (cached).
 4. **Refresh tracks** on a card → re-scrapes even if < 24h.
 5. Open **Settings** → step debugger: Login → Scrape Shelves → Scrape Tracks all pass.
-6. Confirm no Liked Songs card, no `+` tab, no Remove/Refresh-section buttons.
+6. Confirm no Liked Songs card, no `+` tab, no Remove/Refresh-section buttons, and the layout resembles the Spotify Music home page.
 
 ---
 
@@ -1373,10 +1431,11 @@ git commit -m "docs: update SPEC + CHANGELOG for lazy single-page scrape (v1.12.
 
 **Spec coverage** (each design section → task):
 - Source page `home?facet=music-chip` → Task 3 (`MUSIC_CHIP_URL`), Task 4.
-- Grouped-by-shelf layout → Task 3 (script), Task 4 (sections derived), Task 10 (tabs).
+- Grouped-by-shelf **stacked** layout (no tabs) → Task 3 (script), Task 4 (sections derived), Task 10 (`renderHome` stacked sections, tabs removed).
+- Card subtitles + shelf descriptions → Task 3 (`cardSubtitle`/`shelfDescription` in script), Task 4 (threaded into playlists + `sectionDescriptions`), Task 7 Step 3b (`buildPlaylistCards`), Task 10 (description under heading).
 - Cache tracks, 24h TTL → Task 1 (`tracksAreFresh`, `tracksFetchedAt`), Task 5 (`ensureTracks`).
 - Drop Liked Songs → Task 9.
-- Playlists only → Task 3 (only `a[href*="/playlist/"]`).
+- Playlists only (skip station/album/artist) → Task 3 (only `a[href*="/playlist/"]`).
 - Auto-refresh = list only → Task 6 (`silentRefresh` → `syncPlaylists`).
 - Auto-fetch tracks on View → Task 7 (`openPlaylistById`).
 - Open/close window per action → Task 2 (`withSpotifyWindow` closes on settle); each `ensureTracks`/`syncPlaylists` call opens its own.
@@ -1387,6 +1446,6 @@ git commit -m "docs: update SPEC + CHANGELOG for lazy single-page scrape (v1.12.
 - Step debugger adapted → Task 11.
 - Known limitations documented → Task 12.
 
-**Type/name consistency:** `withSpotifyWindow(opts, fn)`, `syncPlaylists(visible, trigger)` → `{playlists, sections}`, `ensureTracks(pl, opts)` → `Promise<tracks>`, `applySyncResult(result)`, `tracksAreFresh(pl)`, `MUSIC_CHIP_URL`, `TRACKS_TTL_MS`, `SCRIPT_SCRAPE_SHELVES`, `state.loadingTracksFor` — all used consistently across tasks.
+**Type/name consistency:** `withSpotifyWindow(opts, fn)`, `syncPlaylists(visible, trigger)` → `{playlists, sections, sectionDescriptions}`, `ensureTracks(pl, opts)` → `Promise<tracks>`, `applySyncResult(result)`, `tracksAreFresh(pl)`, `MUSIC_CHIP_URL`, `TRACKS_TTL_MS`, `SCRIPT_SCRAPE_SHELVES`, `state.loadingTracksFor`, `state.sectionDescriptions`, playlist `cardSubtitle` field, storage key `spotify_browse_section_descriptions` — all used consistently across tasks.
 
 **Note on line numbers:** all `~line N` references are from the pre-change `index.js` and will drift as tasks delete code. Anchor on the quoted code snippets and function names, not the numbers.

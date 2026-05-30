@@ -33,10 +33,11 @@ This trades a slow, flaky eager pipeline for a fast, simple, lazy one.
 | Decision | Choice |
 |----------|--------|
 | Source page | `open.spotify.com/home?facet=music-chip` |
-| Layout | Grouped by shelf (one section/tab per shelf heading) |
+| Layout | Grouped by shelf, **stacked vertically** (heading + card-grid per shelf; no tabs) |
 | Track caching | Cache to disk on first fetch; invalidate after 24h |
 | Liked Songs | Dropped entirely |
-| Card types | Playlists only (ignore album/artist cards) |
+| Card types | Playlists only (ignore album/artist/station cards) |
+| Card detail | Capture each card's subtitle text and each shelf's description (gray text) so the panel matches the Spotify page before tracks are fetched |
 | Auto-refresh | Kept, but refreshes the **list only** (no track scraping) |
 | View behavior | Auto-fetch tracks on opening the detail view |
 | Browse window | Open/close per action (no persistent warm window) |
@@ -50,10 +51,13 @@ This trades a slow, flaky eager pipeline for a fast, simple, lazy one.
   fully populated and visual immediately — covers come from the cards already in
   the DOM, so no track scrape is needed to show the library.
 - **Shelf heading → `section`.** This maps cleanly onto the existing `section`
-  concept, so the on-disk layout (`playlists/{section}/{id}/…`), the tabs, the
-  per-section card grids, and the home-shelf registration all keep working.
-  The only change is that `state.sections` is **derived from the scrape**
-  instead of user-configured.
+  concept, so the on-disk layout (`playlists/{section}/{id}/…`), the per-section
+  card grids, and the home-shelf registration all keep working. The only changes
+  are that `state.sections` is **derived from the scrape** instead of
+  user-configured, and the section **tabs are replaced by stacked sections**
+  (one heading + card-grid per shelf, top to bottom — mirroring the music-chip
+  page itself). Dropping tabs also removes the active-tab reconciliation that
+  rotating shelf names would otherwise require on every sync.
 - **Tracks** are populated lazily by `ensureTracks(pl)` and cached on disk with
   a `tracksFetchedAt` timestamp.
 
@@ -87,12 +91,21 @@ resolve. The keep-old-tracks-on-empty guard moves here (single-playlist scope).
 Walks `<main>` and iterates shelf containers (`<section>` / heading + card-row).
 For each shelf:
 
-1. Read the heading text (the section name).
+1. Read the heading text (the section name) and the shelf description line (the
+   gray text beneath the heading, if present).
 2. Collect `a[href*="/playlist/"]` cards within the shelf, extracting playlist
-   id (from href), name (text content), and cover (reusing the existing
-   `IMG_HELPER` / `findImgContainer` walk).
+   id (from href), name, **subtitle** (the gray "With X, Y…" / "… music for
+   you" card text), and cover (reusing the existing `IMG_HELPER` /
+   `findImgContainer` walk). Cards linking to `/station/`, `/album/`,
+   `/artist/`, etc. are ignored (playlists only — e.g. the "Recommended
+   Stations" shelf yields nothing).
 3. Dedupe playlist ids across shelves — **first shelf wins** as the playlist's
    section.
+
+The scraped card `subtitle` is shown on the card immediately (so the grid looks
+like the Spotify page before any tracks are fetched). Once tracks are fetched,
+the subtitle is replaced by the track count + last-synced stamp (existing
+behavior). The shelf `description` is shown under the section heading.
 
 To handle lazy-rendered shelves, the script first scrolls the page vertically to
 the bottom (same pattern as the track scraper) so all shelves materialize before
@@ -117,6 +130,9 @@ collecting.
   `section-input*`, `add-section`, `remove-section`. The
   `spotify_browse_sections` storage key is no longer authoritative (sections are
   derived; it may be retained only as a cold-start render cache).
+- **Section tabs:** the `tabs` UI element, `buildTabs`, `switch-tab`, and
+  `state.activeTab` reconciliation. Replaced by stacked sections rendered
+  vertically (one heading + card-grid per shelf).
 - **Liked Songs entirely:** `LIKED_SECTION`, `LIKED_PLAYLIST_ID`,
   `makeLikedPlaylist`, `ensureLikedCover`, `LIKED_COVER_SVG`, `isLikedSection`,
   `getLikedPlaylist`, `refresh-liked`, the pinned card, and all
