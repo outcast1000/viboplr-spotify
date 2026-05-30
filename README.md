@@ -18,6 +18,11 @@ For every release: edit `index.js` / `manifest.json`, **bump `version` in
 `manifest.json`**, and add a `## vX.Y.Z` section at the top of `CHANGELOG.md`.
 Then publish via CI (preferred) or manually.
 
+Bump helper: `scripts/bump.sh <patch|minor|major|X.Y.Z>` rewrites the
+`manifest.json` version and prepends a `## vX.Y.Z` CHANGELOG section (with a
+`TODO` to fill in). It does not commit/tag/push — review, fill in the changelog,
+then release.
+
 ### Release via CI (preferred)
 
 A GitHub Actions workflow (`.github/workflows/release.yml`) builds and publishes
