@@ -7,6 +7,9 @@ architecture details.
 Plugin id: `spotify-browse` (so an installed copy overrides the app's bundled
 built-in of the same id).
 
+New to writing Viboplr plugins? See **[DEVELOPING.md](DEVELOPING.md)** for the
+develop/reload/debug workflow.
+
 ## Install
 
 In Viboplr: **Extensions → Install from URL** and paste this repo's URL, or it
