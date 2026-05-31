@@ -2,7 +2,17 @@
 
 ## Purpose
 
-Scrapes playlists and tracks from the Spotify web app (`open.spotify.com`) via an embedded browser window. Spotify does not provide a public API for personalized sections like "Made for You", so the plugin navigates the DOM directly. Users can monitor multiple Spotify browse sections, save playlists to the app's saved-playlists store, and play/enqueue scraped tracks through Viboplr's fallback resolution.
+Scrapes playlists from the Spotify web app (`open.spotify.com`) via an embedded
+browser window. Spotify does not provide a public API for personalized sections
+like "Made for You", so the plugin navigates the DOM directly.
+
+The plugin loads the **Music home page** (`open.spotify.com/home?facet=music-chip`)
+in a single pass and scrapes every playlist card across all shelves, grouping
+them by shelf heading. It does **not** prefetch track listings — a playlist's
+tracks are scraped lazily the first time the user views, plays, or enqueues it,
+and cached on disk for 24 hours. Users can save playlists to the app's
+saved-playlists store and play/enqueue scraped tracks through Viboplr's fallback
+resolution.
 
 ## Architecture
 
@@ -29,34 +39,44 @@ Scrapes playlists and tracks from the Spotify web app (`open.spotify.com`) via a
 ### Key Components
 
 - **State** — single `state` object holding all UI and data state; persisted across sessions via `api.storage`
-- **Scraper** — opens `open.spotify.com` in a browse window, injects JS scripts to check login, navigate sections, find playlists, scroll and scrape tracks
-- **Renderer** — builds plugin view data (toolbar, tabs, card grids, track row lists) and calls `api.ui.setViewData`
+- **Scraper** — opens the Music home page in a browse window, injects JS scripts
+  to check login, scrape all shelves (`SCRIPT_SCRAPE_SHELVES`), and lazily scroll
+  + scrape one playlist's tracks on demand (`scriptScrollThenScrape`). The shared
+  `withSpotifyWindow(opts, fn)` helper centralizes the open + login-poll + banner
+  flow for both the list sync (`syncPlaylists`) and the lazy track fetch (`ensureTracks`).
+- **Renderer** — builds plugin view data (toolbar, stacked shelf sections, card
+  grids, track row lists) and calls `api.ui.setViewData`
 
 ## UI Structure
 
 ### Toolbar (hoisted, always visible)
 - **Title:** "Spotify"
-- **Buttons:** "Refresh All" + "Open Browser" (idle/done), "Cancel" (during scrape), "Open Spotify" (first use)
+- **Buttons:** "Sync" (idle/done) or "Cancel" (during scrape), plus a "Browser: ON/OFF" toggle
 - **Status text:** Live scrape progress during activity, last check time + results when idle, error messages on failure
 
-### Tabs
-- One tab per configured section (e.g. "Made for You", "Your Top Mixes") with playlist count badges
-- **"+" tab** — shows inline text input to add a new section
-
-### Section Tab Content
-- **Per-section toolbar:** "Refresh [section]" + "Remove Section" buttons
-- **Playlist card grid** with context menus: Play, Enqueue, View/Edit, Save to Playlists
-- Empty state message when no playlists found
+### Stacked Shelves (the main view)
+- The view mirrors the Spotify Music home page: one **section per shelf**, stacked
+  vertically, each as a heading (the shelf name) + an optional gray description
+  line + a playlist **card grid**. There are no tabs and no user-configured sections.
+- Sections (their names, order, and descriptions) are **derived from the scrape**,
+  not configured. Empty sections are skipped.
+- Cards show the scraped Spotify subtitle (e.g. "With X, Y…") until tracks are
+  fetched, then switch to the track count + last-synced stamp.
+- Card context menu: Play, Enqueue, View/Edit, Refresh tracks, Save to Playlists.
+- Empty state ("No playlists yet… click Sync") when nothing has been scraped.
 
 ### Playlist Detail View
 - Back button, Save to Playlists button
 - Playlist name, track count, cover image
-- Track row list with change indicators (green border = added, strikethrough = removed)
+- Opening the view **auto-fetches tracks lazily** if not cached/fresh, showing a
+  "Loading tracks…" placeholder until the scrape completes.
+- Track row list
 
 ### Settings Panel (`spotify-settings`)
 - Auto-refresh interval select (Off / 6h / 12h / 24h / 2 days / weekly)
 - Show browser window during refresh toggle
-- Debug logging toggle (writes `logs/sync-runs.json` + `logs/page-debug.log`)
+- Debug logging toggle (writes a per-run `logs/YYYYMMDD-HHMMSS.log`)
+- Step-by-step debugger: Check Login → Scrape Shelves → Scrape Tracks
 
 ## Scraping Flow
 
@@ -67,34 +87,46 @@ Scrapes playlists and tracks from the Spotify web app (`open.spotify.com`) via a
 4. If `positive && !negative` → logged in, proceed
 5. If still not logged in after a short grace period (~2 polls), the window is surfaced (`handle.show()`), a sign-in banner is injected (`SCRIPT_LOGIN_BANNER`), and a notification is shown. Polling then continues **indefinitely** — when the user logs in, the banner is removed (`SCRIPT_REMOVE_LOGIN_BANNER`), a headless window is re-hidden, and scraping proceeds; if the user closes the window first, the scrape aborts. This applies to both user-initiated Sync and silent auto-refresh.
 
-### Phase 2: Section Discovery
-For each section in `sectionsToScrape`:
-1. Navigate to Spotify home (`open.spotify.com`)
-2. Inject `scriptFindSection(sectionName)` — searches `<a>` tags and headings for matching text (case-insensitive)
-3. Click the matching element to navigate to the section page
-4. Wait 4s for page render
-5. If not found after 10 retries, record as failed section and move on
+### Phase 2: Single-page shelf scrape (`syncPlaylists`)
+1. Navigate to `open.spotify.com/home?facet=music-chip` (the window opened there
+   already; the URL is re-asserted in case login redirected away).
+2. Wait ~4s for the SPA to render, then inject `SCRIPT_SCRAPE_SHELVES`.
+3. The script scrolls the page to the bottom to materialize lazy shelves, then
+   walks each `<section>` container: reads the heading (the section name) and a
+   gray description line, and collects `a[href*="/playlist/"]` cards within it —
+   capturing each card's playlist id, name, subtitle, and cover image.
+4. Playlists are deduplicated by id across shelves (**first shelf wins** as the
+   section). Station/album/artist cards are ignored (playlists only).
+5. The result `{ playlists, sections, sectionDescriptions }` is merged into state
+   by `applySyncResult`, which derives the section list/order from the scrape and
+   carries over cached tracks for surviving playlists. **No track listings are
+   scraped during sync.** A scrape that returns zero playlists while a library
+   already exists is rejected (it does not wipe the library).
+6. A 60s backstop timeout resolves the scrape empty if the page never responds.
 
-### Phase 3: Playlist Scraping
-1. Inject `SCRIPT_SCRAPE_PLAYLISTS` on the section page
-2. Selector: `a[class][draggable="false"][href*="/playlist/"]`
-3. For each matching link: extract playlist ID from href, name from text content, image by walking up to 6 parent elements
-4. Deduplicate by playlist ID
+### On-demand track fetch (`ensureTracks`)
+A playlist's tracks are scraped only when the user **views, plays, or enqueues**
+it (or clicks "Refresh tracks"):
+1. If cached tracks are fresh (within the 24h TTL) they are returned immediately.
+2. Otherwise open a browse window, navigate to `/playlist/{id}`, wait 4s, inject
+   `scriptScrollThenScrape(playlistId, gen)`.
+3. Auto-scroll to load all tracks; scope to `[data-testid="playlist-tracklist"]`
+   or `<main>` to avoid the sidebar; parse each `[role="row"]` for track name,
+   artist(s), album, duration, image.
+4. 45s timeout with up to 2 attempts (reload + re-scrape). On empty/error, old
+   cached tracks are kept (transient-parse guard) **without** refreshing the TTL
+   stamp, so the next view retries soon.
+5. A non-empty scrape stamps `tracksFetchedAt`, persists to disk, and caches images.
 
-### Phase 4: Track Scraping
-For each discovered playlist:
-1. Navigate to `/playlist/{id}`
-2. Wait 4s for page load
-3. Inject `scriptScrollThenScrape(playlistId, gen)`
-4. Auto-scroll to load all tracks (800ms intervals, stop after 3 stable heights or 50 ticks)
-5. Scope to `[data-testid="playlist-tracklist"]` or `<main>` to avoid sidebar
-6. Parse each `[role="row"]`: extract track name, artist(s), album, duration, image
-7. 45s timeout per playlist
-8. On empty/error/timeout, the playlist page is reloaded and re-scraped once before giving up.
-
-### Generation Guard
-- `scrapeGeneration` counter increments on each new scrape and on cancel
-- All async callbacks check `gen !== scrapeGeneration` to abort stale operations
+### Generation Guard & single-window serialization
+- `scrapeGeneration` increments on each new browse-window open (`withSpotifyWindow`)
+  and on cancel. All async callbacks check `ctx.isStale()` (`gen !== scrapeGeneration`)
+  to abort stale operations.
+- Only **one** browse window may be open at a time: `withSpotifyWindow` sets a
+  `windowBusy` flag synchronously and **rejects** a concurrent open (e.g. a lazy
+  track fetch overlapping an auto-refresh) rather than stranding the in-flight
+  window. The flag is released when the window settles or on `cancel`. Lazy
+  Play/View/Enqueue surface a "Spotify is busy" notification if rejected.
 
 ## Data Model
 
@@ -102,21 +134,26 @@ For each discovered playlist:
 
 | Key | Shape | Purpose |
 |-----|-------|---------|
-| `spotify_browse_state` | `{ playlists, playlistTracks, savedAt }` | Current scrape results (legacy KV, migrated to on-disk layout) |
-| `spotify_browse_sections` | `string[]` | Configured section names |
+| `spotify_browse_sections` | `string[]` | Last-scraped section names + order (cold-start render cache; derived from the scrape, not user-configured) |
+| `spotify_browse_section_descriptions` | `{ [section]: string }` | Last-scraped shelf description lines (cold-start render cache) |
 | `spotify_browse_preferences` | `{ showBrowserOnRefresh, autoRefreshHours, debugLogging, lastCheckAt, lastCheckResult }` | User preferences + last check info |
+
+The authoritative playlist/track store is the on-disk layout
+`playlists/{section}/{id}/{meta.json,tracks.json,cover.jpg,track-*.jpg}`.
 
 ### Debug Log Files (written only when "Debug logging" is on)
 
 | File | Contents | Trim |
 |------|----------|------|
-| `logs/sync-runs.json` | Array of run reports (trigger, timing, per-section/playlist status) | last 20 runs |
-| `logs/page-debug.log` | Full HTML + snapshot of each playlist page that failed to parse (after retry) | ~2 MB |
+| `logs/YYYYMMDD-HHMMSS.log` | One human-readable report per sync run (trigger, timing, per-section/playlist status, trace) | last 20 runs |
 
-### Playlist Object (scraped)
+### Playlist Object (scraped / on disk)
 ```
-{ id, name, description, imageUrl, uri, section }
+{ id, name, description, cardSubtitle, imageUrl, uri, section, lastSyncedAt, tracksFetchedAt }
 ```
+`cardSubtitle` is the scraped shelf-card subtitle (shown until tracks load).
+`tracksFetchedAt` is the ISO timestamp of the last successful non-empty track
+scrape; it drives the 24h lazy-cache TTL (`tracksAreFresh`).
 
 ### Track Object (scraped)
 ```
@@ -125,14 +162,17 @@ For each discovered playlist:
 
 ## Track Retention
 
-On refresh, if a playlist's fresh scrape returns zero tracks while the previous scrape had
-tracks, the old tracks (and cover) are kept. This guards against transient parse failures
-wiping a playlist; the tradeoff is that an intentionally-emptied Spotify playlist keeps
-showing old tracks until a non-empty scrape succeeds.
+Tracks are fetched lazily and cached for 24h (`TRACKS_TTL_MS`). If a fresh track
+scrape returns zero tracks while the playlist previously had tracks, the old
+tracks are kept (transient-parse guard) and the TTL stamp is deliberately **not**
+refreshed, so the next view/play retries soon. `tracksAreFresh` treats a playlist
+with no cached tracks as stale regardless of timestamp, so a genuinely-empty or
+failed scrape is always retried on next demand.
 
-Each playlist records `lastSyncedAt` (ISO timestamp) on a successful non-empty scrape,
-shown as "synced <date>, <time>" on cards and the playlist detail header. A failed scrape
-(empty/error/timeout) is retried once by reloading the page before giving up.
+Each playlist records `lastSyncedAt` (ISO timestamp): set at list-scrape time and
+refreshed on a successful non-empty track scrape. Shown as "synced <date>, <time>"
+on cards and the detail header. A failed track scrape is retried up to twice
+(reload + re-scrape) before giving up.
 
 ## Image Caching
 
@@ -145,32 +185,27 @@ shown as "synced <date>, <time>" on cards and the playlist detail header. A fail
 
 - Configurable interval: 0 (off), 6, 12, 24, 48, or 168 hours
 - Uses `api.scheduler.register("auto-refresh", intervalMs)`
-- Silent refresh runs headless (no visible browser), records results
-- Badge shows accent dot on changes, error dot on failure
+- Silent refresh runs headless and refreshes the **playlist list only**
+  (`syncPlaylists`) — it does **not** scrape tracks. Cached tracks expire on
+  their own 24h timer.
+- Badge shows error dot on failure
 
 ## Actions Reference
 
 ### Toolbar Actions
 | Action | Trigger | Behavior |
 |--------|---------|----------|
-| `open-spotify` | First-use button | Full scrape with visible browser |
-| `manual-refresh` | Refresh All button | Full scrape (headless unless pref set) |
+| `sync` | Sync button | Single-page shelf scrape (headless unless Browser toggle is ON) |
 | `cancel` | Cancel button | Increment generation, close browser |
-| `open-browser` | Open Browser button | Open Spotify in visible window |
-
-### Section Actions
-| Action | Data | Behavior |
-|--------|------|----------|
-| `refresh-section` | `{ section }` | Scrape single section, merge results |
-| `remove-section-tab` | `{ section }` | Remove section from config and tabs |
-| `add-section-tab` | — | Add section from pending input |
+| `toggle-show-browser-pref` | Browser ON/OFF toggle | Toggle visible-browser preference |
 
 ### Playlist Actions
 | Action | Context | Behavior |
 |--------|---------|----------|
-| `play-playlist` | Card context menu | Play via `requestAction("play-tracks")` |
-| `enqueue-playlist` | Card context menu | Enqueue via `requestAction("enqueue-tracks")` |
-| `view-playlist` | Card click/menu | Show playlist detail view |
+| `play-playlist` | Card context menu | Lazily fetch tracks (`ensureTracks`), then play |
+| `enqueue-playlist` | Card context menu | Lazily fetch tracks, then enqueue |
+| `view-playlist` | Card click/menu | Show detail view; auto-fetch tracks if stale |
+| `refresh-tracks-ctx` | Card context menu | Force re-scrape this playlist's tracks (`ensureTracks(pl, {force:true})`) |
 | `save-playlist` | Detail view button | Save to app playlists via `api.playlists.save` |
 | `save-playlist-ctx` | Card context menu | Save to app playlists |
 
@@ -179,11 +214,9 @@ shown as "synced <date>, <time>" on cards and the playlist detail header. A fail
 | Script | Purpose | Key Selector |
 |--------|---------|-------------|
 | `SCRIPT_CHECK_LOGIN` | Detect login state | `[data-testid="user-widget-link"]`, `[data-testid="login-button"]` |
-| `scriptFindSection(name)` | Navigate to a section | `<a>` and `<h2>/<h3>/<span>/<p>` text matching |
-| `SCRIPT_SCRAPE_PLAYLISTS` | Find playlists on section page | `a[class][draggable="false"][href*="/playlist/"]` |
+| `SCRIPT_SCRAPE_SHELVES` | Scrape all shelves on the music-chip home (heading, description, cards) | document-order sweep over `h1,h2,h3,[role="heading"]` + `a[href*="/playlist/"]` |
 | `scriptNavigatePlaylist(id)` | Navigate to playlist page | Direct URL assignment |
 | `scriptScrollThenScrape(id, gen)` | Scroll + parse tracks | `[role="row"]` inside `[data-testid="playlist-tracklist"]` |
-| `SCRIPT_FULL_DUMP` | Full-HTML dump of a failed page | `[data-testid="playlist-tracklist"]` -> `main` -> `body` |
 | `SCRIPT_LOGIN_BANNER` | Inject "please sign in" banner when not logged in | fixed-position `<div>` prepended to `<html>` |
 | `SCRIPT_REMOVE_LOGIN_BANNER` | Remove the sign-in banner once logged in | by element id |
 
@@ -193,3 +226,14 @@ shown as "synced <date>, <time>" on cards and the playlist detail header. A fail
 - DOM selectors may break when Spotify updates their web app
 - Headless scraping requires an existing login session (cookies persisted by the browse window)
 - Track matching for playback uses title+artist fuzzy matching via fallback resolution, not Spotify track IDs
+- **Lazy shelf rendering:** each shelf is a single horizontal row (~10 cards) with
+  a "Show all" link; the rest aren't in the DOM until expanded. v1 captures the
+  cards rendered after a vertical page scroll — per-shelf "Show all" expansion is
+  a future enhancement.
+- **First-play latency:** the first View/Play/Enqueue of an uncached (or
+  24h-expired) playlist pays the full scroll-scrape time (seconds), mitigated by
+  caching + loading states but not eliminated.
+- **Empty-scrape guard:** a sync that returns zero playlists while a library
+  already exists is rejected to avoid wiping it on a timeout/parse error. The
+  tradeoff is that a genuinely-emptied Spotify account keeps showing the old
+  library until a non-empty scrape succeeds.

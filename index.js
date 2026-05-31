@@ -5,20 +5,23 @@
 function activate(api) {
   var activeScrapeHandle = null;
   var scrapeGeneration = 0;
-  var pendingSectionInput = "";
+  // Only one browse window may be open at a time. Set synchronously when a
+  // withSpotifyWindow call starts so a second concurrent open (e.g. a lazy
+  // track fetch overlapping an auto-refresh) is rejected rather than stranding
+  // the first window and wedging the UI.
+  var windowBusy = false;
+  // Whether this plugin currently owns the single global host loading modal, so
+  // concurrent Play/Enqueue actions don't show/hide each other's modal.
+  var loadingModalActive = false;
 
   var state = {
     currentView: "home",
-    // idle | waiting-login | finding-section | scraping-playlists |
-    // scraping-tracks | done | error
+    // idle | waiting-login | done | error
     status: "idle",
     playlists: [],
     playlistTracks: {},   // playlistId -> [{ name, artist, album, duration, imageUrl, spotifyId }]
     currentPlaylist: null,
-    scrapeProgress: { current: 0, total: 0, name: "", found: 0 },
     errorMessage: "",
-    activeTab: "section:Made for You",
-    lastLoginCheck: null,
     refreshing: false,
     showBrowserOnRefresh: false,
     autoRefreshHours: 24,
@@ -27,70 +30,35 @@ function activate(api) {
     lastCheckResult: null,
     refreshSummary: "",
     sections: ["Made for You"],
-    addingSectionViaTab: false,
     lastReport: null,
     showDiagnostics: false,
     // Per-playlist search query (only used in the detail view). Keyed by
     // playlist id so navigating away and back keeps the query.
     playlistSearch: {},
+    // Playlist id currently being lazily track-scraped (for the detail-view
+    // loading state). Null when idle.
+    loadingTracksFor: null,
+    // Section name -> shelf description (gray text under the heading), from the
+    // last scrape. Cold-start cache loaded at init.
+    sectionDescriptions: {},
   };
 
+  // Lazy-track cache TTL. Tracks scraped on demand are reused for this long
+  // before a View/Play triggers a fresh scrape. See the lazy-single-page spec.
+  var TRACKS_TTL_MS = 24 * 60 * 60 * 1000;
+
+  // True if this playlist's cached tracks are still fresh (within TTL) AND we
+  // actually have tracks in memory for it. Missing/old tracksFetchedAt => stale.
+  function tracksAreFresh(pl) {
+    if (!pl || !pl.tracksFetchedAt) return false;
+    var t = Date.parse(pl.tracksFetchedAt);
+    if (isNaN(t)) return false;
+    var tracks = state.playlistTracks[pl.id];
+    if (!tracks || tracks.length === 0) return false;
+    return (Date.now() - t) < TRACKS_TTL_MS;
+  }
+
   // ---- Helpers ----
-
-  // Liked Songs is /collection/tracks — a fixed-URL collection rather than a
-  // section of playlists. Treat it as a synthetic single-playlist "section" so
-  // it slots into the existing section/playlist/tracks pipeline.
-  var LIKED_SECTION = "Liked Songs";
-  var LIKED_PLAYLIST_ID = "__liked_songs__";
-
-  function isLikedSection(name) {
-    return String(name || "").toLowerCase() === LIKED_SECTION.toLowerCase();
-  }
-
-  function makeLikedPlaylist() {
-    return {
-      id: LIKED_PLAYLIST_ID,
-      name: LIKED_SECTION,
-      section: LIKED_SECTION,
-      description: "Your saved tracks on Spotify.",
-      imageUrl: null,
-      uri: "spotify://collection/tracks",
-    };
-  }
-
-  // The Liked Songs page has no real cover — Spotify renders a purple gradient
-  // with a heart icon. og:image points at a generic Spotify image. Generate a
-  // matching SVG locally and write it to the playlist's directory so the card
-  // gets the familiar look without round-tripping to the network.
-  var LIKED_COVER_SVG =
-    '<?xml version="1.0" encoding="UTF-8"?>' +
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">' +
-    '<defs>' +
-    '<linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">' +
-    '<stop offset="0%" stop-color="#4A0080"/>' +
-    '<stop offset="100%" stop-color="#A0C0FF"/>' +
-    '</linearGradient>' +
-    '</defs>' +
-    '<rect width="300" height="300" fill="url(#g)"/>' +
-    '<path d="M150 230 C150 230, 80 185, 80 130 C80 105, 100 85, 125 85 C140 85, 150 95, 150 95 C150 95, 160 85, 175 85 C200 85, 220 105, 220 130 C220 185, 150 230, 150 230 Z" fill="#FFFFFF"/>' +
-    '</svg>';
-
-  // Write Liked Songs cover SVG to disk if missing. Returns the resolved file path.
-  function ensureLikedCover(pl) {
-    var dir = playlistDir(pl);
-    var svgPath = dir.concat(["cover.svg"]);
-    return api.storage.files.exists(svgPath).then(function (has) {
-      if (has) return api.storage.files.getPath(svgPath);
-      return api.storage.files.writeText(svgPath, LIKED_COVER_SVG)
-        .then(function () { return api.storage.files.getPath(svgPath); });
-    }).then(function (p) {
-      if (p) pl.imageUrl = p;
-      return p;
-    }).catch(function (e) {
-      console.error("Failed to write Liked Songs cover:", e);
-      return null;
-    });
-  }
 
   function escapeHtml(s) {
     if (!s) return "";
@@ -160,8 +128,6 @@ function activate(api) {
       // Detailed sync trace (persisted as the per-run logs/YYYYMMDD-HHMMSS.log)
       formattedLog: [],
       pageVisits: [],   // [{url, phase, ts}]
-      imageHits: [],    // [{kind, playlistId, playlistName, url, rule, element}]
-      ruleStats: {},    // ruleKey -> { ok, fail }
     };
     syncNote("sync", "=== Spotify sync started ===", {
       trigger: trigger,
@@ -172,18 +138,6 @@ function activate(api) {
   function recordPageVisit(url, phase) {
     if (!activeReport || !url) return;
     activeReport.pageVisits.push({ url: url, phase: phase || "", ts: Date.now() });
-  }
-
-  function recordImageHit(entry) {
-    if (!activeReport) return;
-    activeReport.imageHits.push(entry);
-  }
-
-  function recordRuleOutcome(ruleKey, ok) {
-    if (!activeReport || !ruleKey) return;
-    if (!activeReport.ruleStats[ruleKey]) activeReport.ruleStats[ruleKey] = { ok: 0, fail: 0 };
-    if (ok) activeReport.ruleStats[ruleKey].ok++;
-    else activeReport.ruleStats[ruleKey].fail++;
   }
 
   function buildLastSyncLog(report) {
@@ -234,34 +188,6 @@ function activate(api) {
     }
     lines.push("");
 
-    // Images discovered
-    lines.push("--- Images retrieved (" + (report.imageHits || []).length + ") ---");
-    for (var im = 0; im < (report.imageHits || []).length; im++) {
-      var h = report.imageHits[im];
-      var label = "  [" + (h.kind || "?") + "]";
-      if (h.playlistName) label += " " + h.playlistName + " (" + (h.playlistId || "?") + ")";
-      label += " rule=" + (h.rule || "?");
-      if (h.element) label += " element=" + h.element;
-      label += " url=" + (h.url ? String(h.url).substring(0, 200) : "(none)");
-      lines.push(label);
-    }
-    lines.push("");
-
-    // Rule stats
-    lines.push("--- Rule outcomes ---");
-    var ruleKeys = Object.keys(report.ruleStats || {});
-    if (ruleKeys.length === 0) {
-      lines.push("  (no rule outcomes recorded)");
-    } else {
-      ruleKeys.sort();
-      for (var rk = 0; rk < ruleKeys.length; rk++) {
-        var key = ruleKeys[rk];
-        var st = report.ruleStats[key];
-        lines.push("  " + key + ": ok=" + (st.ok || 0) + " fail=" + (st.fail || 0));
-      }
-    }
-    lines.push("");
-
     // Per-section snapshots (if any captured for failures)
     var hasSnap = false;
     for (var ss = 0; ss < (report.sections || []).length; ss++) {
@@ -307,14 +233,6 @@ function activate(api) {
     }
 
     return lines.join("\n");
-  }
-
-  function getReportSection(name) {
-    if (!activeReport) return null;
-    for (var i = 0; i < activeReport.sections.length; i++) {
-      if (activeReport.sections[i].name === name) return activeReport.sections[i];
-    }
-    return null;
   }
 
   function finishReport(outcome, errorMessage) {
@@ -367,8 +285,8 @@ function activate(api) {
   }
 
   // Keep only the newest MAX_PER_RUN_LOGS timestamped logs. The regex matches ONLY
-  // our YYYYMMDD-HHMMSS.log files, so page-debug.log and anything else are never
-  // touched. Lexicographic sort == chronological for this fixed-width format.
+  // our YYYYMMDD-HHMMSS.log files, so any other file in logs/ is never touched.
+  // Lexicographic sort == chronological for this fixed-width format.
   function prunePerRunLogs() {
     api.storage.files.list(["logs"]).then(function (entries) {
       if (!entries || !entries.length) return;
@@ -400,46 +318,6 @@ function activate(api) {
       state.lastReport = report;
       renderSettings();
     }).catch(function (e) { console.error("Failed to read reports:", e); });
-  }
-
-  // ---- Debug file logs (only written when state.debugLogging) ----
-
-  var MAX_PAGE_DEBUG_BYTES = 2 * 1024 * 1024; // ~2 MB
-  var PAGE_DEBUG_DELIM = "===== BEGIN DUMP ";
-
-  // Append one failure dump to logs/page-debug.log (rolling, ~2 MB cap).
-  // `info` = { playlistId, playlistName, outcome }, `dump` = fulldump message data.
-  function appendPageDebugFile(info, dump) {
-    if (!state.debugLogging) return;
-    var ts = new Date().toISOString();
-    var block = PAGE_DEBUG_DELIM + ts + " =====\n" +
-      "playlist: " + (info.playlistName || "?") + " (" + (info.playlistId || "?") + ")\n" +
-      "outcome: " + (info.outcome || "?") + "\n" +
-      "url: " + (dump && dump.url ? dump.url : "?") + "\n" +
-      "counts: " + safeStringify(dump && dump.counts ? dump.counts : {}) + "\n" +
-      "testids: " + ((dump && dump.testids ? dump.testids : []).slice(0, 30).join(", ")) + "\n" +
-      "===== HTML =====\n" +
-      (dump && dump.html ? dump.html : (dump && dump.error ? "(dump error: " + dump.error + ")" : "(no html)")) + "\n" +
-      "===== END DUMP =====\n\n";
-    api.storage.files.readText(["logs", "page-debug.log"]).then(function (existing) {
-      var text = (typeof existing === "string" ? existing : "") + block;
-      if (text.length > MAX_PAGE_DEBUG_BYTES) {
-        // Drop oldest whole dumps until under budget.
-        var parts = text.split(PAGE_DEBUG_DELIM);
-        // parts[0] is anything before the first delimiter (usually ""); rebuild
-        // from the tail, re-adding the delimiter we split on.
-        var rebuilt = "";
-        for (var i = parts.length - 1; i >= 1; i--) {
-          var candidate = PAGE_DEBUG_DELIM + parts[i] + rebuilt;
-          if (candidate.length > MAX_PAGE_DEBUG_BYTES) break;
-          rebuilt = candidate;
-        }
-        text = rebuilt || block; // never drop the just-added block entirely
-      }
-      return api.storage.files.writeText(["logs", "page-debug.log"], text);
-    }).catch(function (e) {
-      console.error("Failed to write page-debug.log:", e);
-    });
   }
 
   function sectionsEqual(a, b) {
@@ -508,7 +386,7 @@ function activate(api) {
     var dir = playlistDir(pl);
     var tracks = state.playlistTracks[pl.id] || [];
 
-    var coverFile = pl.id === LIKED_PLAYLIST_ID ? "cover.svg" : "cover.jpg";
+    var coverFile = "cover.jpg";
     var metaP = api.storage.files.writeJson(dir.concat(["meta.json"]), {
       id: pl.id,
       name: pl.name,
@@ -517,6 +395,8 @@ function activate(api) {
       coverFile: coverFile,
       coverVersion: pl.coverVersion || null,
       lastSyncedAt: pl.lastSyncedAt || null,
+      tracksFetchedAt: pl.tracksFetchedAt || null,
+      cardSubtitle: pl.cardSubtitle || "",
     }).catch(function (e) { console.error("Failed to write meta:", pl.id, e); });
 
     var tracksP = api.storage.files.writeJson(dir.concat(["tracks.json"]), serializeTracks(tracks))
@@ -542,11 +422,7 @@ function activate(api) {
     for (var pi = 0; pi < state.playlists.length; pi++) {
       (function (pl) {
         var dir = playlistDir(pl);
-        if (pl.id === LIKED_PLAYLIST_ID) {
-          promises.push(ensureLikedCover(pl));
-          // Liked Songs has no remote cover to fetch; track images are still
-          // handled via the standard path below.
-        } else if (pl.imageUrl && pl.imageUrl.indexOf("http") === 0) {
+        if (pl.imageUrl && pl.imageUrl.indexOf("http") === 0) {
           stats.covers++;
           var coverUrl = pl.imageUrl;
           promises.push(
@@ -756,6 +632,8 @@ function activate(api) {
             coverVersion: meta.coverVersion || null,
             uri: "spotify://playlists/" + meta.id,
             lastSyncedAt: meta.lastSyncedAt || null,
+            tracksFetchedAt: meta.tracksFetchedAt || null,
+            cardSubtitle: meta.cardSubtitle || "",
           };
           return { playlist: playlist, tracks: tracks };
         });
@@ -803,22 +681,13 @@ function activate(api) {
 
   function getStatusText() {
     if (state.status === "waiting-login") return "Waiting for login…";
-    if (state.status === "finding-section") return state.refreshSummary || "Finding section…";
-    if (state.status === "scraping-playlists") return "Grabbing playlists…";
-    if (state.status === "scraping-tracks") {
-      var lbl = "Grabbing tracks";
-      if (state.scrapeProgress.name) lbl += ": " + state.scrapeProgress.name;
-      if (state.scrapeProgress.total > 0) lbl += " (" + state.scrapeProgress.current + "/" + state.scrapeProgress.total + ")";
-      if (state.scrapeProgress.found) lbl += " — " + state.scrapeProgress.found + " tracks";
-      return lbl + "…";
-    }
     if (state.status === "error") return state.errorMessage;
     if (state.refreshSummary) return state.refreshSummary;
     return "";
   }
 
   function isActiveStatus() {
-    return state.status === "waiting-login" || state.status === "finding-section" || state.status === "scraping-playlists" || state.status === "scraping-tracks";
+    return state.status === "waiting-login";
   }
 
   function buildToolbar() {
@@ -859,25 +728,6 @@ function activate(api) {
     };
   }
 
-  function buildTabs() {
-    var tabs = [];
-    for (var i = 0; i < state.sections.length; i++) {
-      var sec = state.sections[i];
-      var secPlaylists = getPlaylistsForSection(sec);
-      tabs.push({ id: "section:" + sec, label: sec, count: secPlaylists.length || undefined });
-    }
-    tabs.push({ id: "__add__", label: "+" });
-    return tabs;
-  }
-
-  // Returns the synthetic Liked Songs playlist if it's in state.playlists.
-  function getLikedPlaylist() {
-    for (var i = 0; i < state.playlists.length; i++) {
-      if (state.playlists[i].id === LIKED_PLAYLIST_ID) return state.playlists[i];
-    }
-    return null;
-  }
-
   // Short "May 29, 14:32" style stamp for last-synced display.
   function formatSyncTime(iso) {
     if (!iso) return "";
@@ -892,8 +742,19 @@ function activate(api) {
     for (var pi = 0; pi < playlists.length; pi++) {
       var sp = playlists[pi];
       var ts = state.playlistTracks[sp.id];
-      var sub = ts ? ts.length + " tracks" : (sp.description || "");
-      if (sp.lastSyncedAt) sub += " · synced " + formatSyncTime(sp.lastSyncedAt);
+      // Before tracks are fetched, show the scraped home-card subtitle (e.g.
+      // "With X, Y…"). After a fetch, show the track count + synced stamp.
+      // Do NOT fall back to pl.description — that's the long playlist-page
+      // description (only non-empty for algorithmic Made-for-You playlists, and
+      // carried over from the old plugin's meta.json), which is the wrong text
+      // for a card subtitle and caused stale "old plugin" descriptions to show.
+      var sub;
+      if (ts && ts.length > 0) {
+        sub = ts.length + " tracks";
+        if (sp.lastSyncedAt) sub += " · synced " + formatSyncTime(sp.lastSyncedAt);
+      } else {
+        sub = sp.cardSubtitle || "";
+      }
       var cardTracks = [];
       if (ts) {
         for (var ti = 0; ti < ts.length; ti++) {
@@ -908,13 +769,8 @@ function activate(api) {
         { id: "play-playlist", label: "Play" },
         { id: "enqueue-playlist", label: "Enqueue" },
         { id: "view-playlist", label: "View / Edit" },
+        { id: "refresh-tracks-ctx", label: "Refresh tracks" },
       ];
-      // Liked Songs has no section toolbar (it's a pinned card), so expose
-      // its refresh action on the card menu.
-      if (sp.id === LIKED_PLAYLIST_ID) {
-        menu.push({ id: "sep-refresh", label: "", separator: true });
-        menu.push({ id: "refresh-liked", label: "Refresh" });
-      }
       menu.push({ id: "sep", label: "", separator: true });
       menu.push({ id: "save-playlist-ctx", label: "Save to Playlists" });
 
@@ -934,74 +790,69 @@ function activate(api) {
 
   function renderHome() {
     api.ui.setBadge("spotify", null);
-    var ch = [];
     var isActive = isActiveStatus();
-
-    if (state.activeTab.indexOf("section:") === 0) {
-      var sectionName = state.activeTab.substring(8);
-      var secPlaylists = getPlaylistsForSection(sectionName);
-      if (!isActive) {
-        var sectionActions = [];
-        // Liked Songs is a built-in collection — don't allow removal.
-        if (!isLikedSection(sectionName)) {
-          sectionActions.push({ type: "button", label: "Remove Section", action: "remove-section-tab", variant: "secondary", style: { "font-size": "var(--fs-xs)", "padding": "3px 10px" }, data: { section: sectionName } });
-        }
-        if (state.status !== "idle") {
-          sectionActions.unshift(
-            { type: "button", label: "Refresh " + sectionName, action: "refresh-section", variant: "secondary", disabled: state.refreshing, style: { "font-size": "var(--fs-xs)", "padding": "3px 10px" }, data: { section: sectionName } }
-          );
-        }
-        if (sectionActions.length > 0) {
-          ch.push({
-            type: "layout", direction: "horizontal", style: { "margin-bottom": "8px", "gap": "8px" },
-            children: sectionActions,
-          });
-        }
-      }
-      if (secPlaylists.length === 0 && state.status === "idle") {
-        ch.push({ type: "text", content: "<p style='opacity:0.5'>No playlists found for this section. Click <b>Sync</b> to scrape.</p>" });
-      } else if (secPlaylists.length > 0) {
-        ch.push({ type: "card-grid", items: buildPlaylistCards(secPlaylists) });
-      }
-    }
 
     var toolbar = buildToolbar();
     toolbar.buttons.push({ label: state.showBrowserOnRefresh ? "Browser: ON" : "Browser: OFF", action: "toggle-show-browser-pref", variant: state.showBrowserOnRefresh ? "accent" : "secondary" });
     var view = [toolbar];
 
-    // Pinned Liked Songs card (rendered above the section tabs once it exists).
-    var likedPl = getLikedPlaylist();
-    if (likedPl) {
-      view.push({
-        type: "layout", direction: "vertical", style: { "padding": "12px 16px 0" },
-        children: [{ type: "card-grid", items: buildPlaylistCards([likedPl]) }],
-      });
+    // Empty state: nothing scraped yet.
+    if (state.sections.length === 0) {
+      if (!isActive && state.status === "idle") {
+        view.push({ type: "text", content: "<p style='opacity:0.5;padding:16px'>No playlists yet. Click <b>Sync</b> to scrape your Spotify Music home.</p>" });
+      }
+      api.ui.setViewData("spotify", { type: "layout", direction: "vertical", children: view }, { scrollKey: "home" });
+      return;
     }
 
-    view.push({ type: "tabs", activeTab: state.activeTab, action: "switch-tab", tabs: buildTabs() });
-
-    if (state.addingSectionViaTab) {
-      ch.unshift({
-        type: "layout", direction: "horizontal", style: { "gap": "8px", "margin": "0 0 8px 0", "align-items": "center" },
+    // One stacked block per shelf: heading (+ description) + card-grid.
+    for (var i = 0; i < state.sections.length; i++) {
+      var sectionName = state.sections[i];
+      var secPlaylists = getPlaylistsForSection(sectionName);
+      if (secPlaylists.length === 0) continue;
+      var headerHtml = "<h3 style='margin:0 0 2px;font-size:var(--fs-md)'>" + escapeHtml(sectionName) + "</h3>";
+      var descr = state.sectionDescriptions[sectionName];
+      if (descr) headerHtml += "<p style='margin:0 0 6px;font-size:var(--fs-xs);color:var(--text-secondary)'>" + escapeHtml(descr) + "</p>";
+      view.push({
+        type: "layout", direction: "vertical", style: { "padding": "12px 16px 0" },
         children: [
-          { type: "text-input", placeholder: "Section name (e.g. Your Top Mixes)", action: "section-tab-input" },
-          { type: "button", label: "Add", action: "add-section-tab", variant: "accent", style: { "font-size": "var(--fs-xs)", "padding": "3px 10px" } },
-          { type: "button", label: "Cancel", action: "cancel-add-section", variant: "secondary", style: { "font-size": "var(--fs-xs)", "padding": "3px 10px" } },
+          { type: "text", content: headerHtml },
+          { type: "card-grid", items: buildPlaylistCards(secPlaylists) },
         ],
       });
     }
 
-    view.push({ type: "layout", direction: "vertical", children: ch });
+    api.ui.setViewData("spotify", { type: "layout", direction: "vertical", children: view }, { scrollKey: "home" });
+  }
 
-    api.ui.setViewData("spotify", {
-      type: "layout", direction: "vertical", children: view
-    });
+  // Build the hero's crossfade background (bgImages, host caps at 4): the cover
+  // first, then up to 3 DISTINCT LOCAL track album-arts. Track arts are included
+  // only once cached locally (imageUrl not starting with "http") — during a
+  // scrape they're remote CDN URLs, excluded so the background stays the cover
+  // until images cache, then upgrades to the collage. De-duped; never repeats
+  // the cover. Pure: no api/DOM/state.
+  function buildHeroBackground(pl, tracks) {
+    var bg = [];
+    var seen = {};
+    var cover = pl && pl.imageUrl;
+    if (cover) { bg.push(cover); seen[cover] = true; }
+    var list = tracks || [];
+    for (var i = 0; i < list.length && bg.length < 4; i++) {
+      var url = list[i] && list[i].imageUrl;
+      if (!url) continue;
+      if (url.indexOf("http") === 0) continue; // remote (not yet cached) — skip
+      if (seen[url]) continue;
+      seen[url] = true;
+      bg.push(url);
+    }
+    return bg;
   }
 
   function renderPlaylist() {
     var pl = state.currentPlaylist;
     if (!pl) return;
     var tracks = state.playlistTracks[pl.id] || [];
+    var loadingThis = state.loadingTracksFor === pl.id;
     var query = (state.playlistSearch[pl.id] || "").trim().toLowerCase();
     var contextActions = [
       { id: "play-current", label: "Play" },
@@ -1015,10 +866,13 @@ function activate(api) {
       {
         type: "detail-header",
         title: pl.name,
+        subtitle: pl.description || undefined,
         meta: headerMeta,
         imageUrl: pl.imageUrl || undefined,
+        bgImages: buildHeroBackground(pl, tracks),
         backAction: "go-home",
-        playAction: tracks.length > 0 ? "play-current" : undefined,
+        playAction: (!loadingThis && tracks.length > 0) ? "play-current" : undefined,
+        enqueueAction: (!loadingThis && tracks.length > 0) ? "enqueue-current" : undefined,
         contextMenuActions: contextActions,
       },
     ];
@@ -1046,7 +900,8 @@ function activate(api) {
         items.push({
           id: "track:" + i,
           title: t.name || "Unknown",
-          subtitle: (t.artist || "Unknown") + (t.album ? " — " + t.album : ""),
+          subtitle: t.artist || "Unknown",
+          album: t.album || "",
           imageUrl: t.imageUrl || undefined,
           duration: t.duration || "",
           action: "play-track",
@@ -1058,12 +913,18 @@ function activate(api) {
         ch.push({ type: "text", content: "<p style='font-size:var(--fs-xs);color:var(--text-secondary);margin:6px 0 0'>" + items.length + " of " + tracks.length + " tracks</p>" });
       }
       if (items.length > 0) {
-        ch.push({ type: "track-row-list", items: items });
+        ch.push({ type: "track-row-list", items: items, numbered: true, showHeader: true });
       }
+      // Still scraping more rows: spinner + live count footer (host loading node).
+      if (loadingThis) {
+        ch.push({ type: "loading", message: "Loading more… " + tracks.length + " tracks" });
+      }
+    } else if (loadingThis) {
+      ch.push({ type: "loading", message: "Fetching tracks…" });
     } else {
       ch.push({ type: "text", content: "<p style='opacity:0.5'>No tracks scraped</p>" });
     }
-    api.ui.setViewData("spotify", { type: "layout", direction: "vertical", children: ch });
+    api.ui.setViewData("spotify", { type: "layout", direction: "vertical", children: ch }, { scrollKey: "playlist:" + pl.id });
   }
 
   function renderSettings() {
@@ -1170,7 +1031,7 @@ function activate(api) {
       }
     }
 
-    children.push({ type: "text", content: "<p><i>Detailed logs are written to the app log file (filter by spotify-browse). When Debug logging is on, each sync run is written as a timestamped <code>logs/YYYYMMDD-HHMMSS.log</code> file (newest 20 kept), and failed-page HTML dumps to <code>logs/page-debug.log</code>, in the plugin's data folder.</i></p>" });
+    children.push({ type: "text", content: "<p><i>Detailed logs are written to the app log file (filter by spotify-browse). When Debug logging is on, each sync run is written as a timestamped <code>logs/YYYYMMDD-HHMMSS.log</code> file (newest 20 kept) in the plugin's data folder.</i></p>" });
 
     return { type: "section", title: "Diagnostics", children: children };
   }
@@ -1179,7 +1040,6 @@ function activate(api) {
 
   var dbgTest = {
     status: "idle", // idle | running | waiting | done
-    sectionName: "Made for You",
     currentStep: 0,
     steps: [],
     handle: null,
@@ -1189,9 +1049,8 @@ function activate(api) {
 
   var DBG_STEPS = [
     { id: "login", label: "1. Check Login" },
-    { id: "find-section", label: "2. Find Section" },
-    { id: "scrape-playlists", label: "3. Scrape Playlists" },
-    { id: "scrape-tracks", label: "4. Scrape Tracks" },
+    { id: "scrape-shelves", label: "2. Scrape Shelves" },
+    { id: "scrape-tracks", label: "3. Scrape Tracks" },
   ];
 
   function dbgStart() {
@@ -1219,30 +1078,23 @@ function activate(api) {
       }).catch(function (e) {
         dbgStepFail("login", "Failed to open window: " + e);
       });
-    } else if (stepId === "find-section") {
-      dbgTest.steps.push({ id: "find-section", status: "running", source: "live", log: [] });
+    } else if (stepId === "scrape-shelves") {
+      dbgTest.steps.push({ id: "scrape-shelves", status: "running", source: "live", log: [] });
       dbgTest.status = "running";
       renderSettings();
-      dbgEvalAndWait(scriptFindSection(dbgTest.sectionName), "section-found", 15000, function (data) {
-        setTimeout(function () {
-          dbgStepDone("find-section", "Section found: " + escapeHtml(safeStringify(data)));
-        }, 4000);
-      }, function () {
-        dbgStepFail("find-section", "Section '" + escapeHtml(dbgTest.sectionName) + "' not found");
-      });
-    } else if (stepId === "scrape-playlists") {
-      dbgTest.steps.push({ id: "scrape-playlists", status: "running", source: "live", log: [] });
-      dbgTest.status = "running";
-      renderSettings();
+      dbgTest.handle.eval('window.location.href=' + JSON.stringify(MUSIC_CHIP_URL)).catch(console.error);
       setTimeout(function () {
-        dbgEvalAndWait(SCRIPT_SCRAPE_PLAYLISTS, "playlists", 15000, function (data) {
-          var pls = Array.isArray(data) ? data : [];
+        dbgEvalAndWait(SCRIPT_SCRAPE_SHELVES, "shelves", 30000, function (data) {
+          var shelves = (data && data.shelves) || [];
+          var pls = [];
+          for (var s = 0; s < shelves.length; s++) {
+            for (var p = 0; p < shelves[s].playlists.length; p++) pls.push(shelves[s].playlists[p]);
+          }
           dbgTest.playlists = pls;
           if (pls.length > 0) dbgTest.selectedPlaylist = pls[0].id;
-          var names = pls.map(function (p) { return p.name; }).slice(0, 10);
-          dbgStepDone("scrape-playlists", "Found <b>" + pls.length + "</b> playlist(s): " + names.map(escapeHtml).join(", ") + (pls.length > 10 ? "..." : ""));
+          dbgStepDone("scrape-shelves", "Found <b>" + shelves.length + "</b> shelf(s), <b>" + pls.length + "</b> playlist(s)");
         }, function () {
-          dbgStepFail("scrape-playlists", "No playlists found (timeout)");
+          dbgStepFail("scrape-shelves", "No shelves found (timeout)");
         });
       }, 4000);
     } else if (stepId === "scrape-tracks") {
@@ -1447,9 +1299,7 @@ function activate(api) {
 
     children.push({
       type: "layout", direction: "horizontal", style: { gap: "8px", "align-items": "center" },
-      children: [
-        { type: "text-input", placeholder: "Section name (e.g. Made for You)", action: "dbg-section-name", value: dbgTest.sectionName, style: { flex: "1" }, disabled: running || waiting },
-      ].concat(headerButtons),
+      children: headerButtons,
     });
 
     // Step results
@@ -1514,48 +1364,6 @@ function activate(api) {
       'try{if(window.__viboplr&&window.__viboplr.send)window.__viboplr.send("dbg",{tag:tag,msg:msg,data:data,level:"error"})}catch(e){}' +
     '}';
 
-  // Capture a compact DOM snapshot for failure diagnostics. Sent via __viboplr.send("snapshot", {...}).
-  var SNAPSHOT_HELPER =
-    'function _snap(label){' +
-      'try{' +
-        'var body=document.body?document.body.innerHTML:"";' +
-        'if(body.length>8192)body=body.substring(0,8192)+"...[truncated "+(body.length-8192)+" chars]";' +
-        'var testids=[];var tidNodes=document.querySelectorAll("[data-testid]");' +
-        'for(var t=0;t<Math.min(tidNodes.length,50);t++)testids.push(tidNodes[t].getAttribute("data-testid"));' +
-        'var counts={' +
-          'playlistLinks:document.querySelectorAll("a[href*=\\"/playlist/\\"]").length,' +
-          'draggableLinks:document.querySelectorAll("a[draggable=\\"false\\"][href*=\\"/playlist/\\"]").length,' +
-          'rows:document.querySelectorAll("[role=\\"row\\"]").length,' +
-          'trackLinks:document.querySelectorAll("a[href*=\\"/track/\\"]").length,' +
-          'artistLinks:document.querySelectorAll("a[href*=\\"/artist/\\"]").length,' +
-          'mainEl:!!document.querySelector("main"),' +
-          'trackList:!!document.querySelector("[data-testid=\\"playlist-tracklist\\"]")' +
-        '};' +
-        'window.__viboplr.send("snapshot",{label:label,url:location.href,title:document.title,counts:counts,testids:testids,bodyExcerpt:body});' +
-      '}catch(e){window.__viboplr.send("snapshot",{label:label,error:""+e})}' +
-    '}';
-
-  // Full-page HTML dump for debugging parse failures. Unlike _snap (which caps
-  // the body at 8 KB), this captures the entire tracklist container's outerHTML,
-  // falling back to <main>, then <body>. Sent as a "fulldump" message.
-  var SCRIPT_FULL_DUMP =
-    '(function(){' +
-      'try{' +
-        'var el=document.querySelector("[data-testid=\\"playlist-tracklist\\"]")||document.querySelector("main")||document.body;' +
-        'var html=el?el.outerHTML:"";' +
-        'var testids=[];var tidNodes=document.querySelectorAll("[data-testid]");' +
-        'for(var t=0;t<Math.min(tidNodes.length,50);t++)testids.push(tidNodes[t].getAttribute("data-testid"));' +
-        'var counts={' +
-          'rows:document.querySelectorAll("[role=\\"row\\"]").length,' +
-          'trackLinks:document.querySelectorAll("a[href*=\\"/track/\\"]").length,' +
-          'artistLinks:document.querySelectorAll("a[href*=\\"/artist/\\"]").length,' +
-          'mainEl:!!document.querySelector("main"),' +
-          'trackList:!!document.querySelector("[data-testid=\\"playlist-tracklist\\"]")' +
-        '};' +
-        'window.__viboplr.send("fulldump",{url:location.href,title:document.title,counts:counts,testids:testids,html:html});' +
-      '}catch(e){window.__viboplr.send("fulldump",{error:""+e})}' +
-    '})()';
-
   // Injected when we open the window because the user isn't logged in. Adds a
   // fixed banner telling them what to do; the banner is removed automatically
   // once login is detected and scraping proceeds. Mirrors the google-image-search
@@ -1583,27 +1391,6 @@ function activate(api) {
       'if(el&&el.parentNode)el.parentNode.removeChild(el);' +
       'if(document.body)document.body.style.paddingTop="";' +
     '})();';
-
-  // Click a filter pill / nav item labeled "Music". Spotify shows these above the
-  // library when filtered to shows/podcasts — switching back to Music reveals playlists.
-  var SCRIPT_CLICK_MUSIC = '(function(){try{' +
-    DBG_HELPER +
-    'var candidates=document.querySelectorAll(\'button,a,[role="button"],[role="tab"],[role="listitem"] span\');' +
-    '_dbg("music","scanning "+candidates.length+" candidates");' +
-    'for(var i=0;i<candidates.length;i++){' +
-      'var el=candidates[i];' +
-      'var txt=(el.textContent||"").trim();' +
-      'if(txt.toLowerCase()==="music"){' +
-        'var clickEl=el.tagName==="SPAN"?(el.closest("button")||el.closest("a")||el.closest(\'[role="button"]\')||el.closest(\'[role="tab"]\')||el.closest(\'[role="listitem"]\')||el):el;' +
-        '_dbg("music","FOUND \'Music\', clicking",{tag:clickEl.tagName,role:clickEl.getAttribute("role")});' +
-        'clickEl.click();' +
-        'window.__viboplr.send("music-clicked",{ok:true});' +
-        'return;' +
-      '}' +
-    '}' +
-    '_dbg("music","NOT FOUND");' +
-    'window.__viboplr.send("music-clicked",{ok:false});' +
-    '}catch(e){window.__viboplr.send("music-clicked",{ok:false,error:""+e})}})()';
 
   var IMG_HELPER =
     'function isValidImgUrl(u){' +
@@ -1678,86 +1465,151 @@ function activate(api) {
       'try{window.__viboplr.send("login-check",{loggedIn:false,error:""+e})}catch(e2){console.error("[viboplr-login] send also failed:",e2)}' +
     '}})()';
 
-  // Parameterized section finder — replaces hardcoded SCRIPT_FIND_MADE_FOR_YOU
-  function scriptFindSection(sectionName) {
-    var lower = sectionName.toLowerCase().replace(/'/g, "\\'");
-    return '(function(){try{' +
-      DBG_HELPER +
-      'var target="' + lower + '";' +
-      'var links=document.querySelectorAll("a");' +
-      'var linkTexts=[];for(var x=0;x<Math.min(links.length,30);x++){linkTexts.push(links[x].textContent.trim().substring(0,60))}' +
-      '_dbg("section","searching "+links.length+" links for \\""+target+"\\"",linkTexts);' +
-      'for(var i=0;i<links.length;i++){' +
-        'var txt=(links[i].textContent||"").trim().toLowerCase();' +
-        'if(txt===target||txt.indexOf(target)!==-1){' +
-          'var href=links[i].getAttribute("href")||"";' +
-          '_dbg("section","FOUND via link",{index:i,text:txt,href:href});' +
-          'links[i].click();' +
-          'window.__viboplr.send("section-found",{href:href});' +
-          'return;' +
-        '}' +
-      '}' +
-      'var headings=document.querySelectorAll("h2, h3, span, p");' +
-      '_dbg("section","checking "+headings.length+" headings/spans");' +
-      'for(var j=0;j<headings.length;j++){' +
-        'var h=headings[j];' +
-        'var ht=(h.textContent||"").trim().toLowerCase();' +
-        'if(ht===target||ht.indexOf(target)!==-1){' +
-          'var parent=h.closest("a");' +
-          'if(parent){' +
-            '_dbg("section","FOUND via heading>a",{tag:h.tagName,text:ht,href:parent.getAttribute("href")});' +
-            'parent.click();' +
-            'window.__viboplr.send("section-found",{href:parent.getAttribute("href")||""});' +
-            'return;' +
-          '}' +
-          '_dbg("section","FOUND via heading click",{tag:h.tagName,text:ht});' +
-          'h.click();' +
-          'window.__viboplr.send("section-found",{href:"clicked-heading"});' +
-          'return;' +
-        '}' +
-      '}' +
-      '_dbg("section","NOT FOUND: \\""+target+"\\"",{url:location.href});' +
-      'window.__viboplr.send("section-not-found",{});' +
-      '}catch(e){window.__viboplr.send("error",{message:"find section: "+e})}})()';
-  }
-
-  var SCRIPT_SCRAPE_PLAYLISTS = '(function(){try{' +
+  // Scrape all playlist cards on the music-chip home page, grouped by shelf.
+  // Strategy: find the real (nested) scroll container, then incrementally scroll
+  // it one viewport at a time, sweeping <main> in DOCUMENT ORDER at each stop and
+  // ACCUMULATING (Spotify virtualizes the feed, so cards unmount off-screen). A
+  // heading (h1/h2/h3 or role=heading, not inside a card) starts a new shelf; the
+  // playlist cards that follow it — until the next heading — belong to that shelf.
+  // Dedupe playlist ids across the whole run (first wins). Sends a "shelves" msg:
+  //   { shelves: [{ section, description, playlists: [{id,name,subtitle,imageUrl}] }], total }
+  var SCRIPT_SCRAPE_SHELVES = '(function(){try{' +
     DBG_HELPER +
     IMG_HELPER +
-    'var out=[];var seen={};' +
-    '_dbg("playlists","starting scrape",{url:location.href});' +
-    'function findImgContainer(el){' +
-      'var node=el;' +
-      'for(var up=0;up<6&&node;up++){' +
-        'var img=bestImg(node);' +
-        'if(img)return img;' +
-        'node=node.parentElement;' +
+    'function findImgContainer(el){var node=el;for(var up=0;up<6&&node;up++){var img=bestImg(node);if(img)return img;node=node.parentElement;}return null;}' +
+    // Shelf description from a heading: scan the heading's parent/grandparent for
+    // a descriptive line that isn't a card subtitle. Best-effort.
+    'function descFromHeading(h,title){' +
+      'var scope=h.parentElement?(h.parentElement.parentElement||h.parentElement):null;' +
+      'if(!scope)return "";' +
+      'var cands=scope.querySelectorAll("p,span");' +
+      'for(var d=0;d<cands.length;d++){' +
+        'var c=cands[d];' +
+        'if(c.closest("a[href*=\\"/playlist/\\"]"))continue;' +
+        'var t=(c.textContent||"").trim();' +
+        'if(t&&t!==title&&t.length>10&&t.length<200)return t;' +
       '}' +
-      'return null;' +
+      'return "";' +
     '}' +
-    'var allLinks=document.querySelectorAll("a[class][draggable=\\"false\\"][href*=\\"/playlist/\\"]");' +
-    '_dbg("playlists","draggable=false playlist links",{count:allLinks.length});' +
-    'for(var i=0;i<allLinks.length;i++){' +
-      'var la=allLinks[i];' +
-      'var lm=(la.getAttribute("href")||"").match(/\\/playlist\\/([a-zA-Z0-9]+)/);' +
-      'if(!lm||seen[lm[1]])continue;seen[lm[1]]=1;' +
-      'var lnm=la.textContent.trim();' +
-      'var limg=findImgContainer(la);' +
-      '_dbg("playlists","link["+i+"] found",{id:lm[1],name:lnm,href:la.getAttribute("href"),hasImg:!!limg});' +
-      'if(lnm)out.push({id:lm[1],name:lnm,description:"",imageUrl:limg,uri:"spotify://playlists/"+lm[1]});' +
+    // Card subtitle: walk up from the playlist link to the card container, then
+    // take the first text that differs from the card name. Best-effort.
+    'function cardSubtitle(la,nm){' +
+      'var card=la;' +
+      'for(var up=0;up<5&&card;up++){if(card.parentElement)card=card.parentElement;else break;}' +
+      'if(!card)return "";' +
+      'var cands=card.querySelectorAll("p,span");' +
+      'for(var i=0;i<cands.length;i++){' +
+        'var t=(cands[i].textContent||"").trim();' +
+        'if(t&&t!==nm&&nm.indexOf(t)===-1&&t.indexOf(nm)===-1&&t.length<200)return t;' +
+      '}' +
+      'return "";' +
     '}' +
-    '_dbg("playlists","DONE",{total:out.length,names:out.map(function(p){return p.name})});' +
-    'window.__viboplr.send("playlists",out);' +
-    '}catch(e){window.__viboplr.send("error",{message:""+e})}})()';
+    'function isHeading(el){var t=el.tagName;return t==="H1"||t==="H2"||t==="H3"||el.getAttribute("role")==="heading";}' +
+    // Report a failure exactly once (used by the setTimeout callbacks below, whose
+    // throws would otherwise escape the outer try/catch and hang the scrape).
+    'function _fail(e){try{window.__viboplr.send("error",{message:"scrape shelves: "+e})}catch(_){}}' +
+    // Find the element that actually scrolls. Spotify's app scrolls inside a
+    // nested overflow container, NOT the document — scrolling document.body is a
+    // no-op and the feed never lazy-loads. Walk up from <main> looking for an
+    // ancestor with overflow-y auto/scroll and real overflow (mirrors the track
+    // scraper's findScrollContainer).
+    'function findScrollContainer(){' +
+      'var mainEl=document.querySelector("main")||document.body;' +
+      'var found=document.scrollingElement||document.documentElement;' +
+      'var walker=mainEl;' +
+      'while(walker&&walker!==document.body){' +
+        'var cs=window.getComputedStyle(walker);' +
+        'var ov=cs.overflowY;' +
+        'if((ov==="auto"||ov==="scroll")&&walker.scrollHeight>walker.clientHeight){found=walker;break}' +
+        'walker=walker.parentElement;' +
+      '}' +
+      'return found;' +
+    '}' +
+    // Accumulate across scroll stops: Spotify VIRTUALIZES the feed (unmounts
+    // off-screen cards), so a single end-of-scroll collect misses most of them.
+    // Sweep at each stop in document order — a heading (not inside a card) opens
+    // a shelf; following playlist cards belong to it. Playlists are keyed by id
+    // (shelf membership/order fixed by first-seen); each later sweep BACKFILLS a
+    // still-missing cover/subtitle, because card images lazy-load a beat after
+    // the card mounts (so the first sweep that sees a card often gets a null img).
+    'var shelfByName={};var shelfOrder=[];var byId={};var total=0;' +
+    'function sweep(){' +
+      'var main=document.querySelector("main")||document.body;' +
+      'var nodes=main.querySelectorAll("h1,h2,h3,[role=\\"heading\\"],a[href*=\\"/playlist/\\"]");' +
+      'var cur=null;' +
+      'for(var i=0;i<nodes.length;i++){' +
+        'var el=nodes[i];' +
+        'if(isHeading(el)){' +
+          'if(el.closest("a[href*=\\"/playlist/\\"]"))continue;' +
+          'var ht=(el.textContent||"").trim();' +
+          'if(!ht)continue;' +
+          'if(!shelfByName[ht]){shelfByName[ht]={section:ht,description:descFromHeading(el,ht),playlists:[]};shelfOrder.push(ht);}' +
+          'cur=shelfByName[ht];' +
+          'continue;' +
+        '}' +
+        'var m=(el.getAttribute("href")||"").match(/\\/playlist\\/([a-zA-Z0-9]+)/);' +
+        'if(!m)continue;' +
+        'var nm=(el.textContent||"").trim();' +
+        'var img=findImgContainer(el);' +
+        'var sub=cardSubtitle(el,nm);' +
+        'var existing=byId[m[1]];' +
+        'if(existing){' +
+          // Backfill fields that lazy-loaded after the first sighting.
+          'if(!existing.imageUrl&&img)existing.imageUrl=img;' +
+          'if(!existing.subtitle&&sub)existing.subtitle=sub;' +
+          'if(!existing.name&&nm)existing.name=nm;' +
+          'continue;' +
+        '}' +
+        'if(!nm)continue;' +
+        'if(!cur){if(!shelfByName["Playlists"]){shelfByName["Playlists"]={section:"Playlists",description:"",playlists:[]};shelfOrder.push("Playlists");}cur=shelfByName["Playlists"];}' +
+        'var rec={id:m[1],name:nm,subtitle:sub,imageUrl:img};' +
+        'byId[m[1]]=rec;cur.playlists.push(rec);total++;' +
+      '}' +
+    '}' +
+    'function countNoCover(){var n=0;for(var k in byId){if(byId.hasOwnProperty(k)&&!byId[k].imageUrl)n++;}return n;}' +
+    'function emit(){' +
+      'var out=[];var names=[];' +
+      'for(var s=0;s<shelfOrder.length;s++){var sh=shelfByName[shelfOrder[s]];if(sh.playlists.length>0){out.push(sh);names.push(sh.section);}}' +
+      '_dbg("shelves","DONE",{shelfCount:out.length,total:total,noCover:countNoCover(),sectionEls:document.querySelectorAll("section").length,headings:names});' +
+      'window.__viboplr.send("shelves",{shelves:out,total:total});' +
+    '}' +
+    // Incremental scroll on the real container: sweep, advance one viewport,
+    // repeat until the bottom is stable or we hit the step cap.
+    'var sc=findScrollContainer();' +
+    'var step=Math.max(sc.clientHeight-50,200);' +
+    'var ticks=0;var lastTop=-1;var stable=0;' +
+    'sc.scrollTop=0;' +
+    // Final phase: OSCILLATE through the feed (up, then back down, repeating)
+    // sweeping at every stop until no card is missing a cover or the pass budget
+    // runs out. A one-directional pass gives each card a single retry in a fixed
+    // window; Spotify virtualizes the feed (unmounts off-screen cards) and lazy-
+    // loads card <img>s a beat after mount, so a card showing a placeholder in
+    // that one window is lost. Reversing direction at each edge re-mounts those
+    // cards and gives their lazy images several more chances to resolve.
+    'var settleDir=-1;' +
+    'function settlePass(passes){' +
+      'sweep();' +
+      'if(passes<=0||countNoCover()===0){emit();return;}' +
+      'var atTop=sc.scrollTop<=0;' +
+      'var atBot=sc.scrollTop+sc.clientHeight>=sc.scrollHeight-10;' +
+      // Reverse at either edge so we keep re-traversing the whole feed.
+      'if(atTop)settleDir=1;else if(atBot)settleDir=-1;' +
+      'sc.scrollTop=Math.max(0,sc.scrollTop+settleDir*step);' +
+      'setTimeout(function(){try{settlePass(passes-1)}catch(e){_fail(e)}},250);' +
+    '}' +
+    'function scrollTick(){try{' +
+      'sweep();' +
+      'ticks++;' +
+      'var atBottom=sc.scrollTop+sc.clientHeight>=sc.scrollHeight-10;' +
+      'if(sc.scrollTop===lastTop){stable++;}else{stable=0;lastTop=sc.scrollTop;}' +
+      'if(atBottom||stable>=3||ticks>=60){setTimeout(function(){try{settlePass(60)}catch(e){_fail(e)}},400);return;}' +
+      'sc.scrollTop+=step;' +
+      'setTimeout(scrollTick,350);' +
+    '}catch(e){_fail(e)}}' +
+    'scrollTick();' +
+    '}catch(e){window.__viboplr.send("error",{message:"scrape shelves: "+e})}})()';
 
   function scriptNavigatePlaylist(id) {
-    if (id === LIKED_PLAYLIST_ID) {
-      return '(function(){' +
-        DBG_HELPER +
-        '_dbg("tracks","navigating to /collection/tracks");' +
-        'window.location.href="/collection/tracks"' +
-      '})()';
-    }
     return '(function(){' +
       DBG_HELPER +
       '_dbg("tracks","navigating to /playlist/' + id + '");' +
@@ -1867,7 +1719,7 @@ function activate(api) {
         'if(n%5===0)_dbg("tracks","scrolling",{tick:n,found:allOut.length,scrollTop:sc.scrollTop,scrollH:sc.scrollHeight,atBottom:atBottom});' +
         // Emit a running track count so the UI can show progress without waiting
         // for the full scrape (large playlists like Liked Songs can take minutes).
-        'try{window.__viboplr.send("tracks-progress",{playlistId:"' + playlistId + '",found:allOut.length,gen:_gen})}catch(e){}' +
+        'try{window.__viboplr.send("tracks-progress",{playlistId:"' + playlistId + '",found:allOut.length,tracks:allOut,gen:_gen})}catch(e){}' +
         'if(atBottom||n>=maxSteps){' +
           'parseVisibleRows();' +
           'var descEl=document.querySelector("[data-testid=\\"playlist-description\\"]")||document.querySelector("main [data-testid=\\"entityTitle\\"] ~ span");' +
@@ -1895,127 +1747,80 @@ function activate(api) {
     '}})()';
   }
 
-  // ---- Consolidated scrape function ----
+  // ---- Shared browse-window + login helper ----
 
-  function performScrape(showProgress, visible, sectionsOverride, trigger) {
-    // Full syncs always include Liked Songs alongside whatever sections the
-    // user has configured. Section-specific refreshes only do the named one.
-    var sectionsToScrape;
-    if (sectionsOverride) {
-      sectionsToScrape = sectionsOverride;
-    } else {
-      sectionsToScrape = [LIKED_SECTION].concat(state.sections);
+  // Open a Spotify browse window, wait until logged in (surfacing a sign-in
+  // banner after a short grace period, exactly like the old performScrape), then
+  // run fn(handle, ctx) and resolve with its result. The window is always closed
+  // when fn settles, on cancel (generation bump), or if the user closes it.
+  //
+  //   url:     page to load (defaults to the music-chip home).
+  //   visible: open the window visibly (else headless).
+  //   fn:      function(handle, ctx) -> Promise. ctx exposes { gen } and
+  //            registers a single message handler via ctx.setHandler(fn).
+  //
+  // Resolves null if the scrape was cancelled or the window closed before login.
+  var MUSIC_CHIP_URL = "https://open.spotify.com/home?facet=music-chip";
+
+  function withSpotifyWindow(opts, fn) {
+    var url = (opts && opts.url) || MUSIC_CHIP_URL;
+    var visible = !!(opts && opts.visible);
+
+    // Reject a concurrent open instead of clobbering the in-flight one. The
+    // single global scrapeGeneration / activeScrapeHandle can only track one
+    // window safely.
+    if (windowBusy) {
+      return Promise.reject(new Error("Spotify is busy — try again in a moment"));
     }
-    var triggerLabel = trigger || (sectionsOverride ? "refresh-section" : "refresh-all");
-    beginReport(triggerLabel, sectionsToScrape);
+    windowBusy = true;
 
-    return new Promise(function(resolve, reject) {
-      var allPlaylists = [];
-      var allTracks = {};
-      var seenIds = {};
-      var failedSections = [];
+    return new Promise(function (resolve, reject) {
       var handle = null;
       var gen = ++scrapeGeneration;
-      var pendingSnapshot = null;
-      var pendingFullDump = null;
+      var loginTimer = null;
+      var settled = false;
+      var currentHandler = null;
 
-      function done(val) {
+      function cleanup() {
+        if (loginTimer) { clearInterval(loginTimer); loginTimer = null; }
         if (handle) { handle.close().catch(console.error); handle = null; }
         activeScrapeHandle = null;
-        finishReport(val ? "ok" : "cancelled");
+        // Release the single-window gate so the next action can open one.
+        windowBusy = false;
+      }
+      function finish(val) {
+        if (settled) return;
+        settled = true;
+        cleanup();
         resolve(val);
       }
-
-      function fail(err) {
-        if (handle) { handle.close().catch(console.error); handle = null; }
-        activeScrapeHandle = null;
-        finishReport("error", err && err.message ? err.message : String(err));
+      function failWith(err) {
+        if (settled) return;
+        settled = true;
+        cleanup();
         reject(err);
       }
 
-      function captureSnapshot(label, onDone) {
-        if (!handle) { if (onDone) onDone(null); return; }
-        pendingSnapshot = { label: label, cb: onDone };
-        handle.eval('(function(){' + SNAPSHOT_HELPER + '_snap(' + JSON.stringify(label) + ')})()');
-        setTimeout(function () {
-          if (pendingSnapshot && pendingSnapshot.label === label) {
-            var cb = pendingSnapshot.cb;
-            pendingSnapshot = null;
-            if (cb) cb(null);
-          }
-        }, 2000);
-      }
+      var ctx = {
+        gen: gen,
+        setHandler: function (h) { currentHandler = h; },
+        isStale: function () { return gen !== scrapeGeneration; },
+      };
 
-      function captureFullDump(onDone) {
-        if (!handle || !state.debugLogging) { if (onDone) onDone(null); return; }
-        pendingFullDump = { cb: onDone };
-        handle.eval(SCRIPT_FULL_DUMP);
-        setTimeout(function () {
-          if (pendingFullDump) {
-            var cb = pendingFullDump.cb;
-            pendingFullDump = null;
-            if (cb) cb(null);
-          }
-        }, 3000);
-      }
-
-      api.network.openBrowseWindow("https://open.spotify.com", {
+      api.network.openBrowseWindow(url, {
         title: "Spotify",
         width: 1200,
         height: 800,
-        visible: !!visible,
-      }).then(function(h) {
+        visible: visible,
+      }).then(function (h) {
         handle = h;
         activeScrapeHandle = h;
-        recordPageVisit("https://open.spotify.com", "open");
+        recordPageVisit(url, "open");
         if (h.onNavigation) {
-          h.onNavigation(function (url) {
-            recordPageVisit(url, "navigate");
-            syncNote("nav", "Page navigated", { url: url });
-          });
+          h.onNavigation(function (u) { recordPageVisit(u, "navigate"); });
         }
+
         var loginRetries = 0;
-        var loginTimer = null;
-
-        // Single message handler -- routes to current phase handler
-        var currentHandler = null;
-        function setHandler(fn) {
-          currentHandler = fn;
-        }
-        h.onMessage(function(msg) {
-          if (msg.type === "window-closed") { done(null); return; }
-          if (msg.type === "dbg" && msg.data) {
-            plog(msg.data.level || "info", "browser:" + (msg.data.tag || "?"), msg.data.msg || "", msg.data.data);
-            return;
-          }
-          if (msg.type === "snapshot" && msg.data) {
-            if (pendingSnapshot) {
-              var cb = pendingSnapshot.cb;
-              var snap = msg.data;
-              pendingSnapshot = null;
-              if (cb) cb(snap);
-            }
-            return;
-          }
-          if (msg.type === "fulldump") {
-            if (pendingFullDump) {
-              var fdCb = pendingFullDump.cb;
-              pendingFullDump = null;
-              if (fdCb) fdCb(msg.data || null);
-            }
-            return;
-          }
-          if (currentHandler) currentHandler(msg);
-        });
-
-        // Phase 1: Wait for login
-        if (showProgress) { state.status = "waiting-login"; render(); }
-
-        // Once we've polled a few times without detecting a login, surface the
-        // (possibly hidden) browse window and inject a banner telling the user
-        // to sign in. After that we keep polling indefinitely — the user logs
-        // in and scraping resumes, or they close the window and we abort. This
-        // mirrors the google-image-search captcha flow.
         var LOGIN_GRACE_POLLS = 2;
         var loginPromptShown = false;
 
@@ -2025,484 +1830,312 @@ function activate(api) {
           plog("warn", "login", "Not logged in to Spotify — surfacing window for sign-in");
           h.eval(SCRIPT_LOGIN_BANNER);
           h.show().catch(function (e) { console.error("Failed to show Spotify window:", e); });
-          api.ui.showNotification("Please log in to Spotify in the window that just opened, then syncing will continue.");
+          api.ui.showNotification("Please log in to Spotify in the window that just opened, then it will continue.");
         }
 
+        h.onMessage(function (msg) {
+          if (msg.type === "window-closed") { finish(null); return; }
+          if (msg.type === "dbg" && msg.data) {
+            plog(msg.data.level || "info", "browser:" + (msg.data.tag || "?"), msg.data.msg || "", msg.data.data);
+            return;
+          }
+          if (msg.type === "login-check" && msg.data && msg.data.loggedIn && loginTimer) {
+            clearInterval(loginTimer); loginTimer = null;
+            if (loginPromptShown) {
+              h.eval(SCRIPT_REMOVE_LOGIN_BANNER);
+              if (!visible) h.hide().catch(function (e) { console.error("Failed to re-hide Spotify window:", e); });
+            }
+            // Hand control to fn. Route subsequent messages to its handler.
+            Promise.resolve()
+              .then(function () { return fn(h, ctx); })
+              .then(function (val) { finish(val); })
+              .catch(function (e) { failWith(e); });
+            return;
+          }
+          if (currentHandler) currentHandler(msg);
+        });
+
         function checkLogin() {
-          // Stop polling if this scrape was cancelled or the window was closed
-          // (the window-closed message resolves via done(); a cancel bumps the
-          // generation). Without this the interval would eval on a dead handle.
-          if (gen !== scrapeGeneration || !handle) {
+          if (ctx.isStale() || !handle) {
             if (loginTimer) { clearInterval(loginTimer); loginTimer = null; }
             return;
           }
           loginRetries++;
-          // Give an existing session a couple of polls to render before we
-          // assume the user needs to sign in.
           if (loginRetries > LOGIN_GRACE_POLLS) promptForLogin();
           h.eval(SCRIPT_CHECK_LOGIN);
         }
-
-        setHandler(function(msg) {
-          if (msg.type === "login-check" && msg.data && msg.data.loggedIn) {
-            if (loginTimer) { clearInterval(loginTimer); loginTimer = null; }
-            if (loginPromptShown) {
-              // Clean up the prompt: remove the banner and, for a headless
-              // refresh, hide the window again so scraping stays silent.
-              h.eval(SCRIPT_REMOVE_LOGIN_BANNER);
-              if (!visible) h.hide().catch(function (e) { console.error("Failed to re-hide Spotify window:", e); });
-            }
-            scrapeSections();
-          }
-        });
-
         loginTimer = setInterval(checkLogin, 3000);
         setTimeout(checkLogin, 1500);
-
-        // Phase 2: Iterate over sections
-        function scrapeSections() {
-          var sectionIdx = 0;
-
-          function nextSection() {
-            if (gen !== scrapeGeneration) { done(null); return; }
-            if (sectionIdx >= sectionsToScrape.length) {
-              scrapeAllTracks();
-              return;
-            }
-            var sectionName = sectionsToScrape[sectionIdx];
-            sectionIdx++;
-
-            if (showProgress) {
-              state.status = "finding-section";
-              state.refreshSummary = "Finding: " + sectionName;
-              render();
-            }
-
-            // Liked Songs is a fixed URL, not a discoverable section. Synthesize
-            // a single-playlist result and skip the home/section-finder dance.
-            if (isLikedSection(sectionName)) {
-              var likedPl = makeLikedPlaylist();
-              if (!seenIds[likedPl.id]) {
-                seenIds[likedPl.id] = true;
-                allPlaylists.push(likedPl);
-              }
-              var likedReport = getReportSection(sectionName);
-              if (likedReport) {
-                likedReport.status = "ok";
-                likedReport.playlistCount = 1;
-              }
-              dbg("flow", "section '" + sectionName + "' synthesized as /collection/tracks");
-              nextSection();
-              return;
-            }
-
-            // Navigate to home first (except for the first section where we're already there)
-            if (sectionIdx > 1) {
-              h.eval('window.location.href="https://open.spotify.com"');
-            }
-
-            // Wait for home page to render, then find section
-            setTimeout(function() {
-              var sectionRetries = 0;
-              var musicFallbackTried = false;
-              var reportSection = getReportSection(sectionName);
-
-              function tryFindSection() {
-                if (gen !== scrapeGeneration) { done(null); return; }
-                sectionRetries++;
-                if (reportSection) reportSection.attempts = sectionRetries;
-                if (sectionRetries > 10) {
-                  var giveUpFindSection = function () {
-                    dbg("flow", "GAVE UP finding section: " + sectionName);
-                    if (reportSection) reportSection.status = "not-found";
-                    captureSnapshot("section-not-found:" + sectionName, function (snap) {
-                      if (reportSection) reportSection.snapshot = snap;
-                      failedSections.push(sectionName);
-                      nextSection();
-                    });
-                  };
-                  if (!musicFallbackTried) {
-                    musicFallbackTried = true;
-                    dbg("flow", "section '" + sectionName + "' not found, trying Music button fallback");
-                    clickMusicThen(function() {
-                      sectionRetries = 0;
-                      tryFindSection();
-                    }, giveUpFindSection);
-                    return;
-                  }
-                  giveUpFindSection();
-                  return;
-                }
-                h.eval(scriptFindSection(sectionName));
-              }
-
-              setHandler(function(msg) {
-                if (msg.type === "section-found") {
-                  recordRuleOutcome("section-find:" + sectionName, true);
-                  if (showProgress) { state.status = "scraping-playlists"; render(); }
-                  // Wait for section page to render, then scrape playlists
-                  setTimeout(function() {
-                    scrapePlaylistsForSection(sectionName, musicFallbackTried);
-                  }, 4000);
-                }
-                if (msg.type === "section-not-found") {
-                  recordRuleOutcome("section-find:" + sectionName, false);
-                  setTimeout(tryFindSection, 2000);
-                }
-                if (msg.type === "playlists" && Array.isArray(msg.data)) {
-                  var sectionPlaylists = msg.data;
-                  for (var pi = 0; pi < sectionPlaylists.length; pi++) {
-                    var pl = sectionPlaylists[pi];
-                    if (!seenIds[pl.id]) {
-                      seenIds[pl.id] = true;
-                      pl.section = sectionName;
-                      allPlaylists.push(pl);
-                    }
-                    if (pl.imageUrl) {
-                      recordImageHit({
-                        kind: "playlist-card-cover",
-                        playlistId: pl.id, playlistName: pl.name,
-                        rule: "section-card-bestImg",
-                        element: "a[href*=/playlist/]",
-                        url: pl.imageUrl,
-                      });
-                    }
-                  }
-                  recordRuleOutcome("section-scrape:" + sectionName, sectionPlaylists.length > 0);
-                  if (reportSection) {
-                    reportSection.status = "ok";
-                    reportSection.playlistCount = sectionPlaylists.length;
-                  }
-                  dbg("flow", "section '" + sectionName + "' yielded " + sectionPlaylists.length + " playlists (" + allPlaylists.length + " total unique)");
-                  nextSection();
-                }
-              });
-
-              tryFindSection();
-            }, sectionIdx > 1 ? 3000 : 0);
-          }
-
-          function clickMusicThen(next, giveUp) {
-            if (gen !== scrapeGeneration) { done(null); return; }
-            var priorHandler = currentHandler;
-            var settled = false;
-            function finish(found) {
-              if (settled) return;
-              settled = true;
-              setHandler(priorHandler);
-              if (found) setTimeout(next, 3000);
-              else giveUp();
-            }
-            setHandler(function(msg) {
-              if (msg.type === "music-clicked") {
-                finish(!!(msg.data && msg.data.ok));
-              }
-            });
-            handle.eval(SCRIPT_CLICK_MUSIC);
-            // Safety: if the click script never responds, give up after 3s.
-            setTimeout(function() { finish(false); }, 3000);
-          }
-
-          function scrapePlaylistsForSection(sectionName, musicFallbackAlreadyTried) {
-            var plRetries = 0;
-            var musicFallbackTried = !!musicFallbackAlreadyTried;
-            var reportSection = getReportSection(sectionName);
-
-            function tryScrapePlaylists() {
-              if (gen !== scrapeGeneration) { done(null); return; }
-              plRetries++;
-              if (reportSection) reportSection.attempts = (reportSection.attempts || 0) + 1;
-              if (plRetries > 10) {
-                var giveUpScrapePlaylists = function () {
-                  dbg("flow", "GAVE UP scraping playlists for section: " + sectionName);
-                  if (reportSection) reportSection.status = "empty";
-                  captureSnapshot("playlists-empty:" + sectionName, function (snap) {
-                    if (reportSection && !reportSection.snapshot) reportSection.snapshot = snap;
-                    failedSections.push(sectionName);
-                    nextSection();
-                  });
-                };
-                if (!musicFallbackTried) {
-                  musicFallbackTried = true;
-                  dbg("flow", "section '" + sectionName + "' playlists empty, trying Music button fallback");
-                  clickMusicThen(function() {
-                    plRetries = 0;
-                    tryScrapePlaylists();
-                  }, giveUpScrapePlaylists);
-                  return;
-                }
-                giveUpScrapePlaylists();
-                return;
-              }
-              h.eval(SCRIPT_SCRAPE_PLAYLISTS);
-            }
-
-            // The playlists message is already handled in setHandler above
-            tryScrapePlaylists();
-          }
-
-          nextSection();
-        }
-
-        // Phase 3: Scrape tracks for all collected playlists
-        function scrapeAllTracks() {
-          var trackIdx = 0;
-
-          if (showProgress) {
-            state.status = "scraping-tracks";
-            state.scrapeProgress = { current: 0, total: allPlaylists.length, name: "", found: 0 };
-            render();
-          }
-
-          function scrapeNext() {
-            if (gen !== scrapeGeneration) { done(null); return; }
-            if (trackIdx >= allPlaylists.length) {
-              // All done
-              var result = { playlists: allPlaylists, tracks: allTracks };
-              if (failedSections.length > 0) {
-                result.failedSections = failedSections;
-              }
-              done(result);
-              return;
-            }
-            var pl = allPlaylists[trackIdx];
-            trackIdx++;
-            if (showProgress) {
-              state.scrapeProgress = { current: trackIdx, total: allPlaylists.length, name: pl.name, found: 0 };
-              render();
-            }
-
-            var plReport = {
-              id: pl.id, name: pl.name, section: pl.section || null,
-              status: "pending", trackCount: 0, durationMs: 0,
-              error: null, snapshot: null, attempts: 1,
-            };
-            if (activeReport) activeReport.playlists.push(plReport);
-            var plStart = Date.now();
-
-            h.eval(scriptNavigatePlaylist(pl.id));
-
-            var trackTimeout = null;
-
-            // Liked Songs can be very large, so allow far more scroll steps
-            // and a correspondingly longer timeout. The scroll cadence is ~600ms
-            // per step inside the page, so 600 steps caps at ~6 minutes.
-            var isLiked = pl.id === LIKED_PLAYLIST_ID;
-            var scrapeOpts = isLiked ? { maxSteps: 600 } : null;
-            var scrapeTimeoutMs = isLiked ? 6 * 60 * 1000 : 45000;
-
-            function armTrackTimeout() {
-              trackTimeout = setTimeout(function() {
-                if (gen !== scrapeGeneration) return;
-                plog("warn", "tracks", "Timeout scraping \"" + pl.name + "\" (" + pl.id + ") after " + Math.round(scrapeTimeoutMs / 1000) + "s", { elapsed: Date.now() - plStart });
-                allTracks[pl.id] = allTracks[pl.id] || [];
-                retryOrFinish("timeout", null, "tracks-timeout:" + pl.id);
-              }, scrapeTimeoutMs);
-            }
-
-            // Either reload the page for one more attempt, or finalize the
-            // failure (capture full HTML dump when debug logging is on).
-            function retryOrFinish(finalStatus, errMsg, snapLabel) {
-              if (gen !== scrapeGeneration) { done(null); return; }
-              if (trackTimeout) { clearTimeout(trackTimeout); trackTimeout = null; }
-              if (plReport.attempts < 2) {
-                plReport.attempts++;
-                plog("warn", "tracks", "Reloading \"" + pl.name + "\" (" + pl.id + ") for retry " + plReport.attempts, { prevStatus: finalStatus });
-                h.eval(scriptNavigatePlaylist(pl.id));
-                setTimeout(function () {
-                  if (gen !== scrapeGeneration) return;
-                  plStart = Date.now();
-                  h.eval(scriptScrollThenScrape(pl.id, gen, scrapeOpts));
-                  armTrackTimeout();
-                }, 4000);
-                return;
-              }
-              plReport.status = finalStatus;
-              plReport.durationMs = Date.now() - plStart;
-              if (errMsg) plReport.error = String(errMsg);
-              captureSnapshot(snapLabel, function (snap) {
-                plReport.snapshot = snap;
-                if (snap && snap.counts) plog("warn", "tracks", finalStatus + " snapshot for \"" + pl.name + "\"", { url: snap.url, counts: snap.counts });
-                captureFullDump(function (dump) {
-                  if (dump) appendPageDebugFile({ playlistId: pl.id, playlistName: pl.name, outcome: finalStatus }, dump);
-                  setTimeout(scrapeNext, 1000);
-                });
-              });
-            }
-
-            setHandler(function(msg) {
-              if (msg.type === "tracks-progress" && msg.data && msg.data.playlistId === pl.id) {
-                if (showProgress) {
-                  state.scrapeProgress = { current: trackIdx, total: allPlaylists.length, name: pl.name, found: msg.data.found || 0 };
-                  render();
-                }
-                return;
-              }
-              if (msg.type === "tracks" && msg.data && msg.data.playlistId === pl.id) {
-                if (trackTimeout) { clearTimeout(trackTimeout); trackTimeout = null; }
-                var tracks = msg.data.tracks || [];
-                // Keep the better of multiple attempts: don't let an empty/errored
-                // retry clobber tracks a prior attempt captured for this playlist.
-                if (tracks.length > 0 || !allTracks[pl.id] || allTracks[pl.id].length === 0) {
-                  allTracks[pl.id] = tracks;
-                }
-                if (msg.data.description) pl.description = msg.data.description;
-                // Liked Songs uses a locally-generated SVG cover; ignore any
-                // og:image / page image (it's a generic Spotify graphic).
-                if (msg.data.coverUrl && pl.id !== LIKED_PLAYLIST_ID) pl.imageUrl = msg.data.coverUrl;
-                // Record cover-rule outcomes and the image we ended up with.
-                var attempts = msg.data.coverRuleAttempts || [];
-                for (var ra = 0; ra < attempts.length; ra++) {
-                  recordRuleOutcome("cover:" + attempts[ra].rule, !!attempts[ra].ok);
-                }
-                if (pl.id === LIKED_PLAYLIST_ID) {
-                  recordImageHit({
-                    kind: "playlist-cover",
-                    playlistId: pl.id, playlistName: pl.name,
-                    rule: "liked-songs-svg", element: "local svg", url: "(local)",
-                  });
-                } else if (msg.data.coverUrl) {
-                  recordImageHit({
-                    kind: "playlist-cover",
-                    playlistId: pl.id, playlistName: pl.name,
-                    rule: msg.data.coverRule || "?",
-                    element: msg.data.coverElement || null,
-                    url: msg.data.coverUrl,
-                  });
-                  syncNote("cover", "Cover for \"" + pl.name + "\" via " + (msg.data.coverRule || "?"), {
-                    element: msg.data.coverElement, url: String(msg.data.coverUrl).substring(0, 200),
-                  });
-                } else {
-                  syncNote("cover", "No cover found for \"" + pl.name + "\"", { attempts: attempts });
-                }
-                // Track images
-                var trackImgCount = 0;
-                for (var tt = 0; tt < tracks.length; tt++) {
-                  if (tracks[tt].imageUrl) {
-                    trackImgCount++;
-                    recordImageHit({
-                      kind: "track-image",
-                      playlistId: pl.id, playlistName: pl.name,
-                      rule: "row-bestImg", element: "tr[role=row]",
-                      url: tracks[tt].imageUrl,
-                    });
-                  }
-                }
-                if (trackImgCount > 0) {
-                  syncNote("tracks", "\"" + pl.name + "\" — " + trackImgCount + "/" + tracks.length + " track images discovered");
-                }
-                plReport.trackCount = tracks.length;
-                plReport.durationMs = Date.now() - plStart;
-                if (msg.data.error) {
-                  plog("warn", "tracks", "Scrape error for \"" + pl.name + "\" (" + pl.id + "): " + msg.data.error, { trackCount: tracks.length });
-                  retryOrFinish("error", msg.data.error, "tracks-error:" + pl.id);
-                  return;
-                }
-                if (tracks.length === 0) {
-                  plog("warn", "tracks", "Got 0 tracks for \"" + pl.name + "\" (" + pl.id + ")", {});
-                  retryOrFinish("empty", null, "tracks-empty:" + pl.id);
-                  return;
-                }
-                plReport.status = "ok";
-                plReport.trackCount = tracks.length;
-                plReport.durationMs = Date.now() - plStart;
-                setTimeout(scrapeNext, 1000);
-              }
-            });
-
-            setTimeout(function() {
-              if (gen !== scrapeGeneration) return;
-              h.eval(scriptScrollThenScrape(pl.id, gen, scrapeOpts));
-              armTrackTimeout();
-            }, 4000);
-          }
-
-          scrapeNext();
-        }
-
-      }).catch(fail);
+      }).catch(failWith);
     });
   }
 
-  // ---- Refresh results ----
+  // New single-page sync: scrape the music-chip home page once, grouping
+  // playlists by shelf. Resolves { playlists, sections, sectionDescriptions }
+  // (no tracks — those are fetched lazily). Resolves null if cancelled / not
+  // signed in.
+  function syncPlaylists(visible, trigger) {
+    beginReport(trigger || "sync", ["(music-chip home)"]);
+    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible }, function (h, ctx) {
+      return new Promise(function (resolve) {
+        // Give the SPA a moment to render the home shell before scraping.
+        var done = false;
+        // Backstop: if the page never sends shelves/error (stalled navigation or
+        // an eval that silently failed to run), don't hang forever — resolve
+        // empty after a generous timeout. The scroll+scrape itself caps well
+        // under this (~18s worst case incl. the 1s+4s nav delays).
+        var scrapeTimeout = setTimeout(function () {
+          if (done) return;
+          plog("warn", "shelves", "music-chip scrape timed out — resolving empty");
+          finishScrape([], [], {});
+        }, 60000);
+        function finishScrape(playlists, sections, sectionDescriptions) {
+          if (done) return;
+          done = true;
+          clearTimeout(scrapeTimeout);
+          resolve({ playlists: playlists, sections: sections, sectionDescriptions: sectionDescriptions || {} });
+        }
 
-  // Build the next tracks map: take fresh tracks, but if a playlist's fresh
-  // scrape came back empty while we previously had tracks for it, keep the old
-  // ones (guards against transient parse failures wiping a playlist). Also
-  // preserves the old cover when the fresh playlist object lost its imageUrl.
-  // `newPlaylists` is mutated in place to restore kept covers / lastSyncedAt.
-  function applyKeepOld(newPlaylists, freshTracks, baseTracksMap, oldPlaylistMap) {
-    var out = {};
-    for (var i = 0; i < newPlaylists.length; i++) {
-      var pl = newPlaylists[i];
-      var fresh = freshTracks[pl.id] || [];
-      var oldTracks = baseTracksMap[pl.id];
-      var oldPl = oldPlaylistMap[pl.id];
-      // If this refresh produced no cover for a surviving playlist, keep the
-      // one we already had — applies in both the keep-old and fresh branches.
-      if (!pl.imageUrl && oldPl && oldPl.imageUrl) pl.imageUrl = oldPl.imageUrl;
-      if (fresh.length === 0 && oldTracks && oldTracks.length > 0) {
-        out[pl.id] = oldTracks;
-        if (oldPl && oldPl.lastSyncedAt) pl.lastSyncedAt = oldPl.lastSyncedAt;
-        syncNote("keep-old", "Kept " + oldTracks.length + " old tracks for \"" + pl.name + "\" (fresh scrape was empty)", { id: pl.id });
-      } else {
-        out[pl.id] = fresh;
-        if (fresh.length > 0) pl.lastSyncedAt = new Date().toISOString();
-        else if (oldPl && oldPl.lastSyncedAt) pl.lastSyncedAt = oldPl.lastSyncedAt;
-      }
-    }
-    return out;
+        ctx.setHandler(function (msg) {
+          if (msg.type === "error" && msg.data) {
+            plog("warn", "shelves", "scrape error: " + msg.data.message);
+            finishScrape([], [], {});
+            return;
+          }
+          if (msg.type === "shelves" && msg.data && Array.isArray(msg.data.shelves)) {
+            var shelves = msg.data.shelves;
+            var playlists = [];
+            var sections = [];
+            var sectionDescriptions = {};
+            var seen = {};
+            for (var si = 0; si < shelves.length; si++) {
+              var sec = shelves[si];
+              var name = sec.section || ("Section " + (si + 1));
+              if (sections.indexOf(name) === -1) {
+                sections.push(name);
+                if (sec.description) sectionDescriptions[name] = sec.description;
+              }
+              for (var pi = 0; pi < sec.playlists.length; pi++) {
+                var raw = sec.playlists[pi];
+                if (seen[raw.id]) continue;
+                seen[raw.id] = true;
+                playlists.push({
+                  id: raw.id,
+                  name: raw.name,
+                  section: name,
+                  description: "",
+                  cardSubtitle: raw.subtitle || "",
+                  imageUrl: raw.imageUrl || null,
+                  coverVersion: null,
+                  uri: "spotify://playlists/" + raw.id,
+                  lastSyncedAt: new Date().toISOString(),
+                  tracksFetchedAt: null,
+                });
+              }
+            }
+            dbg("flow", "music-chip scrape: " + playlists.length + " playlists across " + sections.length + " shelves");
+            finishScrape(playlists, sections, sectionDescriptions);
+          }
+        });
+
+        // Navigate to the music-chip page (the window opened there already, but
+        // re-assert in case login redirected away), then scrape after render.
+        setTimeout(function () {
+          if (ctx.isStale()) { finishScrape([], [], {}); return; }
+          h.eval('window.location.href=' + JSON.stringify(MUSIC_CHIP_URL));
+          setTimeout(function () {
+            if (ctx.isStale()) { finishScrape([], [], {}); return; }
+            h.eval(SCRIPT_SCRAPE_SHELVES);
+          }, 4000);
+        }, 1000);
+      });
+    }).then(function (res) {
+      finishReport(res ? "ok" : "cancelled");
+      return res;
+    }).catch(function (err) {
+      finishReport("error", err && err.message ? err.message : String(err));
+      throw err;
+    });
   }
 
-  function processRefreshResults(newPlaylists, newTracks) {
-    var oldPlaylistMap = {};
-    for (var oi = 0; oi < state.playlists.length; oi++) {
-      oldPlaylistMap[state.playlists[oi].id] = state.playlists[oi];
+  // Fetch & cache tracks for a single playlist on demand. Resolves the track
+  // array. Uses the on-disk cache when fresh (within TRACKS_TTL_MS). On a fresh
+  // scrape, keeps old tracks if the new scrape comes back empty (transient parse
+  // guard), stamps tracksFetchedAt, persists, and caches images.
+  //   force: bypass the freshness check and always re-scrape.
+  function ensureTracks(pl, opts) {
+    var force = !!(opts && opts.force);
+    if (!force && tracksAreFresh(pl)) {
+      return Promise.resolve(state.playlistTracks[pl.id] || []);
     }
+    var visible = !!(opts && opts.visible);
+    var oldTracks = state.playlistTracks[pl.id] || [];
 
-    var mergedTracks = applyKeepOld(newPlaylists, newTracks, state.playlistTracks, oldPlaylistMap);
+    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible }, function (h, ctx) {
+      return new Promise(function (resolve) {
+        var gen = ctx.gen;
+        var settled = false;
+        var trackTimeout = null;
+        var attempts = 0;
+        var maxSteps = 60;
+        var timeoutMs = 45000;
 
-    // Remove on-disk dirs for playlists that dropped out of the refresh.
-    var newKeyed = {};
-    for (var p = 0; p < newPlaylists.length; p++) {
-      newKeyed[playlistDir(newPlaylists[p]).join("/")] = true;
-    }
-    for (var op = 0; op < state.playlists.length; op++) {
-      var oldKey = playlistDir(state.playlists[op]).join("/");
-      if (!newKeyed[oldKey]) {
-        deletePlaylistFiles(state.playlists[op]);
-      }
-    }
+        function settle(tracks, descr, coverUrl) {
+          if (settled) return;
+          settled = true;
+          if (trackTimeout) { clearTimeout(trackTimeout); trackTimeout = null; }
+          var finalTracks = tracks;
+          // Keep-old guard: don't let an empty scrape clobber tracks we had.
+          // We deliberately do NOT stamp tracksFetchedAt here, so the cache stays
+          // stale and the next View/Play retries soon (a failed scrape shouldn't
+          // extend the 24h TTL).
+          if ((!finalTracks || finalTracks.length === 0) && oldTracks.length > 0) {
+            finalTracks = oldTracks;
+          } else if (finalTracks && finalTracks.length > 0) {
+            // Only a non-empty scrape refreshes metadata + the TTL stamp.
+            if (descr) pl.description = descr;
+            if (coverUrl) pl.imageUrl = coverUrl;
+            pl.tracksFetchedAt = new Date().toISOString();
+            pl.lastSyncedAt = pl.tracksFetchedAt;
+          }
+          state.playlistTracks[pl.id] = finalTracks;
+          savePlaylist(pl).then(function () { cacheAllImages(); }).catch(console.error);
+          resolve(finalTracks);
+        }
 
-    state.playlists = newPlaylists;
-    state.playlistTracks = mergedTracks;
-    saveState();
+        function arm() {
+          trackTimeout = setTimeout(function () {
+            if (ctx.isStale()) { settle(oldTracks); return; }
+            plog("warn", "tracks", "Timeout scraping \"" + pl.name + "\" (" + pl.id + ")");
+            retryOrFinish();
+          }, timeoutMs);
+        }
+        function retryOrFinish() {
+          if (settled) return;
+          if (trackTimeout) { clearTimeout(trackTimeout); trackTimeout = null; }
+          if (attempts < 2) {
+            attempts++;
+            h.eval(scriptNavigatePlaylist(pl.id));
+            setTimeout(function () {
+              if (ctx.isStale()) { settle(oldTracks); return; }
+              h.eval(scriptScrollThenScrape(pl.id, gen, { maxSteps: maxSteps }));
+              arm();
+            }, 4000);
+            return;
+          }
+          settle(oldTracks);
+        }
+
+        ctx.setHandler(function (msg) {
+          // Progressive update: while scraping, the page posts partial track
+          // arrays each scroll tick. Show them live WITHOUT persisting or
+          // stamping the cache — only settle() (the terminal "tracks" message)
+          // writes to disk / sets tracksFetchedAt, so an interrupted load never
+          // leaves partial data cached or treated as fresh.
+          if (msg.type === "tracks-progress" && msg.data && msg.data.playlistId === pl.id) {
+            // Ignore once settled: a late progress message (still in flight as the
+            // window closes) must not clobber the final settled tracks/metadata.
+            if (settled) return;
+            if (msg.data.gen !== gen) return;
+            if (!Array.isArray(msg.data.tracks)) return;
+            state.playlistTracks[pl.id] = msg.data.tracks;
+            if (state.currentPlaylist && state.currentPlaylist.id === pl.id) renderPlaylist();
+            return;
+          }
+          if (msg.type === "tracks" && msg.data && msg.data.playlistId === pl.id) {
+            var tracks = msg.data.tracks || [];
+            if (msg.data.error) { plog("warn", "tracks", "Scrape error: " + msg.data.error); retryOrFinish(); return; }
+            if (tracks.length === 0) { retryOrFinish(); return; }
+            settle(tracks, msg.data.description, msg.data.coverUrl);
+          }
+        });
+
+        attempts = 1;
+        h.eval(scriptNavigatePlaylist(pl.id));
+        setTimeout(function () {
+          if (ctx.isStale()) { settle(oldTracks); return; }
+          h.eval(scriptScrollThenScrape(pl.id, gen, { maxSteps: maxSteps }));
+          arm();
+        }, 4000);
+      });
+    });
   }
 
   // ---- Refresh ----
+
+  // Merge a syncPlaylists result into state: derive sections from the scrape,
+  // replace the playlist list, and delete on-disk dirs for playlists that
+  // dropped out. Track caches survive for playlists that are still present
+  // (keyed by id); dropped playlists' dirs are removed.
+  // Returns true if the result was applied, false if it was rejected as an
+  // empty scrape that would have wiped an existing library.
+  function applySyncResult(result) {
+    var newPlaylists = result.playlists || [];
+    // Guard: a scrape that came back empty (timeout / parse error / not really
+    // signed in) must NOT wipe a library we already have. Only apply an empty
+    // result when we had nothing to begin with (genuine first-run empty state).
+    if (newPlaylists.length === 0 && state.playlists.length > 0) {
+      plog("warn", "sync", "Scrape returned 0 playlists — keeping existing library");
+      return false;
+    }
+    var oldById = {};
+    for (var oi = 0; oi < state.playlists.length; oi++) {
+      oldById[state.playlists[oi].id] = state.playlists[oi];
+    }
+    // Carry over cached tracks + tracksFetchedAt for surviving playlists so a
+    // list refresh doesn't invalidate already-fetched tracks.
+    var newKeyed = {};
+    for (var i = 0; i < newPlaylists.length; i++) {
+      var np = newPlaylists[i];
+      var old = oldById[np.id];
+      if (old) {
+        np.tracksFetchedAt = old.tracksFetchedAt || null;
+        if (!np.imageUrl && old.imageUrl) np.imageUrl = old.imageUrl;
+        if (!np.cardSubtitle && old.cardSubtitle) np.cardSubtitle = old.cardSubtitle;
+      }
+      newKeyed[playlistDir(np).join("/")] = true;
+    }
+    // Remove dirs for playlists/sections that no longer appear.
+    for (var op = 0; op < state.playlists.length; op++) {
+      var oldKey = playlistDir(state.playlists[op]).join("/");
+      if (!newKeyed[oldKey]) deletePlaylistFiles(state.playlists[op]);
+    }
+    // Keep tracks for survivors; drop tracks for removed playlists.
+    var survivingTracks = {};
+    for (var k = 0; k < newPlaylists.length; k++) {
+      var pid = newPlaylists[k].id;
+      if (state.playlistTracks[pid]) survivingTracks[pid] = state.playlistTracks[pid];
+    }
+    state.playlists = newPlaylists;
+    state.playlistTracks = survivingTracks;
+    state.sections = result.sections;
+    state.sectionDescriptions = result.sectionDescriptions || {};
+    // Persist the derived section list + descriptions as a cold-start render
+    // cache (so headings/order show before the first sync of a new session).
+    api.storage.set("spotify_browse_sections", state.sections).catch(console.error);
+    api.storage.set("spotify_browse_section_descriptions", state.sectionDescriptions).catch(console.error);
+    saveState();
+    return true;
+  }
 
   function silentRefresh() {
     if (state.refreshing) return;
     state.refreshing = true;
 
-    performScrape(false, false, null, "auto-refresh").then(function(result) {
+    syncPlaylists(false, "auto-refresh").then(function (result) {
       state.refreshing = false;
       if (!result) {
         recordCheckResult(0, 1);
         api.ui.setBadge("spotify", { type: "dot", variant: "error" });
         return;
       }
-      processRefreshResults(result.playlists, result.tracks);
-      var errCount = result.failedSections ? result.failedSections.length : 0;
-      recordCheckResult(result.playlists.length, errCount);
-      cacheAllImages();
-      if (errCount > 0) {
-        dbg("flow", "Silent refresh: could not find sections: " + result.failedSections.join(", "));
-      }
+      var applied = applySyncResult(result);
+      recordCheckResult(applied ? result.playlists.length : state.playlists.length, applied ? 0 : 1);
+      if (applied) cacheAllImages();
       api.scheduler.complete("auto-refresh").catch(console.error);
       state.status = "done";
       render();
-    }).catch(function(err) {
+    }).catch(function (err) {
       state.refreshing = false;
       recordCheckResult(0, 1);
       console.error("Silent refresh failed:", err);
@@ -2513,19 +2146,14 @@ function activate(api) {
   // ---- Actions ----
 
   api.ui.onAction("sync", function() {
-    var isFirstRun = state.playlists.length === 0;
-    if (isFirstRun) {
-      state.playlists = [];
-      state.playlistTracks = {};
-    }
     state.status = "waiting-login";
     state.errorMessage = "";
     state.refreshSummary = "";
-    state.refreshing = !isFirstRun;
-    dbg("flow", isFirstRun ? "starting initial sync" : "starting refresh sync");
+    state.refreshing = true;
+    dbg("flow", "starting single-page sync");
     render();
 
-    performScrape(true, state.showBrowserOnRefresh, null, isFirstRun ? "sync-initial" : "sync-refresh").then(function(result) {
+    syncPlaylists(state.showBrowserOnRefresh, "sync").then(function(result) {
       state.refreshing = false;
       if (!result) {
         state.status = "error";
@@ -2533,27 +2161,16 @@ function activate(api) {
         render();
         return;
       }
-      var errCount = result.failedSections ? result.failedSections.length : 0;
-      if (isFirstRun) {
-        state.playlists = result.playlists;
-        state.playlistTracks = result.tracks;
-        if (errCount > 0) {
-          state.refreshSummary = "Could not find: " + result.failedSections.join(", ");
-        }
-        if (state.sections.length > 0) {
-          state.activeTab = "section:" + state.sections[0];
-        }
-        saveState();
+      var applied = applySyncResult(result);
+      if (applied) {
+        state.refreshSummary = "Synced " + result.playlists.length + " playlist" +
+          (result.playlists.length === 1 ? "" : "s") + " across " + result.sections.length + " shelves";
+        recordCheckResult(result.playlists.length, 0);
+        cacheAllImages();
       } else {
-        processRefreshResults(result.playlists, result.tracks);
-        var summaryParts = ["Synced " + result.playlists.length + " playlist" + (result.playlists.length === 1 ? "" : "s")];
-        if (errCount > 0) {
-          summaryParts.push("Could not find: " + result.failedSections.join(", "));
-        }
-        state.refreshSummary = summaryParts.join(". ");
+        state.refreshSummary = "Sync found no playlists — kept existing library";
+        recordCheckResult(state.playlists.length, 1);
       }
-      recordCheckResult(result.playlists.length, errCount);
-      cacheAllImages();
       state.status = "done";
       render();
     }).catch(function(err) {
@@ -2571,178 +2188,57 @@ function activate(api) {
       activeScrapeHandle.close().catch(console.error);
       activeScrapeHandle = null;
     }
+    windowBusy = false;
     state.status = "idle";
     state.refreshing = false;
-    render();
-  });
-
-  // Refresh just the Liked Songs synthetic playlist. Same code path as
-  // refresh-section, but the trigger comes from the card's context menu.
-  api.ui.onAction("refresh-liked", function() {
-    if (state.refreshing) return;
-    refreshSectionByName(LIKED_SECTION);
-  });
-
-  api.ui.onAction("refresh-section", function(data) {
-    if (!data || !data.section) return;
-    if (state.refreshing) return;
-    refreshSectionByName(data.section);
-  });
-
-  function refreshSectionByName(sectionName) {
-    state.refreshing = true;
-    state.refreshSummary = "";
-    state.status = "waiting-login";
-    render();
-
-    performScrape(true, state.showBrowserOnRefresh, [sectionName], "refresh-section:" + sectionName).then(function(result) {
-      state.refreshing = false;
-      if (!result) {
-        state.status = "error";
-        state.errorMessage = "Spotify sign-in was not completed.";
-        render();
-        return;
-      }
-      // Merge: remove old playlists from this section, add new ones.
-      // Any old playlist in this section that didn't reappear gets its
-      // on-disk directory deleted.
-      var keptIds = {};
-      for (var kp = 0; kp < result.playlists.length; kp++) keptIds[result.playlists[kp].id] = true;
-      var kept = [];
-      for (var i = 0; i < state.playlists.length; i++) {
-        var oldPl = state.playlists[i];
-        if (!sectionsEqual(oldPl.section, sectionName)) {
-          kept.push(oldPl);
-        } else if (!keptIds[oldPl.id]) {
-          deletePlaylistFiles(oldPl);
-        }
-      }
-      for (var j = 0; j < result.playlists.length; j++) {
-        kept.push(result.playlists[j]);
-      }
-      // Merge tracks: start from existing, then layer in this section's fresh
-      // results (keeping old tracks where a fresh scrape came back empty).
-      var oldPlaylistMap = {};
-      for (var omi = 0; omi < state.playlists.length; omi++) {
-        oldPlaylistMap[state.playlists[omi].id] = state.playlists[omi];
-      }
-      var sectionTracks = applyKeepOld(result.playlists, result.tracks, state.playlistTracks, oldPlaylistMap);
-      var newTracks = {};
-      var oldKeys = Object.keys(state.playlistTracks);
-      for (var k = 0; k < oldKeys.length; k++) {
-        newTracks[oldKeys[k]] = state.playlistTracks[oldKeys[k]];
-      }
-      var resKeys = Object.keys(sectionTracks);
-      for (var m = 0; m < resKeys.length; m++) {
-        newTracks[resKeys[m]] = sectionTracks[resKeys[m]];
-      }
-      state.playlists = kept;
-      state.playlistTracks = newTracks;
-      var errCount = result.failedSections ? result.failedSections.length : 0;
-      recordCheckResult(result.playlists.length, errCount);
-      saveState();
-      cacheAllImages();
-      state.status = "done";
-      state.refreshSummary = "Refreshed " + sectionName + ": " + result.playlists.length + " playlists";
-      if (errCount > 0) state.refreshSummary += " (" + errCount + " error" + (errCount > 1 ? "s" : "") + ")";
-      render();
-    }).catch(function(err) {
-      state.refreshing = false;
-      state.status = "error";
-      state.errorMessage = "Refresh failed: " + (err.message || err);
-      recordCheckResult(0, 1);
-      render();
-    });
-  }
-
-  api.ui.onAction("remove-section-tab", function(data) {
-    if (!data || !data.section) return;
-    var name = data.section;
-    if (isLikedSection(name)) return;
-    var idx = -1;
-    for (var i = 0; i < state.sections.length; i++) {
-      if (sectionsEqual(state.sections[i], name)) { idx = i; break; }
-    }
-    if (idx === -1) return;
-    state.sections.splice(idx, 1);
-    api.storage.set("spotify_browse_sections", state.sections).catch(console.error);
-    // Drop the section's on-disk directory and any cached playlists/tracks in memory.
-    api.storage.files.remove(["playlists", sanitizeSegment(name)]).catch(console.error);
-    var keptPls = [];
-    for (var p = 0; p < state.playlists.length; p++) {
-      if (!sectionsEqual(state.playlists[p].section, name)) {
-        keptPls.push(state.playlists[p]);
-      } else {
-        delete state.playlistTracks[state.playlists[p].id];
-      }
-    }
-    state.playlists = keptPls;
-    state.activeTab = state.sections.length > 0 ? "section:" + state.sections[0] : "__add__";
-    renderSettings();
-    render();
-  });
-
-  api.ui.onAction("switch-tab", function(data) {
-    if (!data || !data.tabId) return;
-    if (data.tabId === "__add__") {
-      state.addingSectionViaTab = true;
-      render();
-      return;
-    }
-    state.addingSectionViaTab = false;
-    state.activeTab = data.tabId;
-    render();
-  });
-
-  api.ui.onAction("section-tab-input", function(data) {
-    if (data && data.value !== undefined) {
-      pendingSectionInput = data.value;
-    }
-  });
-
-  api.ui.onAction("section-tab-input:submit", function(data) {
-    if (data && data.value) pendingSectionInput = data.value;
-    addSectionFromTab();
-  });
-
-  api.ui.onAction("add-section-tab", function() {
-    addSectionFromTab();
-  });
-
-  function addSectionFromTab() {
-    var name = pendingSectionInput.trim();
-    if (!name) return;
-    for (var i = 0; i < state.sections.length; i++) {
-      if (state.sections[i].toLowerCase() === name.toLowerCase()) return;
-    }
-    state.sections.push(name);
-    pendingSectionInput = "";
-    state.addingSectionViaTab = false;
-    state.activeTab = "section:" + name;
-    api.storage.set("spotify_browse_sections", state.sections).catch(console.error);
-    renderSettings();
-    render();
-  }
-
-  api.ui.onAction("cancel-add-section", function() {
-    state.addingSectionViaTab = false;
-    pendingSectionInput = "";
     render();
   });
 
   api.ui.onAction("go-home", function() {
     state.currentPlaylist = null;
     state.currentView = "home";
+    // Drop any in-flight loading flag so a later detail view doesn't show a
+    // spurious "Loading…" from a fetch we navigated away from.
+    state.loadingTracksFor = null;
     render();
   });
 
-  // Open a playlist's detail view by id. Returns true if found.
+  // Look up a scraped playlist object by its Spotify id (null if not present).
+  function findPlaylistById(pid) {
+    for (var i = 0; i < state.playlists.length; i++) {
+      if (state.playlists[i].id === pid) return state.playlists[i];
+    }
+    return null;
+  }
+
+  // Open a playlist's detail view by id. Auto-fetches tracks (lazy) if they're
+  // not cached/fresh. Returns true if the playlist was found.
   function openPlaylistById(pid) {
     for (var i = 0; i < state.playlists.length; i++) {
       if (state.playlists[i].id === pid) {
-        state.currentPlaylist = state.playlists[i];
+        var pl = state.playlists[i];
+        state.currentPlaylist = pl;
         state.currentView = "playlist";
-        renderPlaylist();
+        if (!tracksAreFresh(pl)) {
+          state.loadingTracksFor = pl.id;
+          renderPlaylist();
+          ensureTracks(pl).then(function () {
+            if (state.currentPlaylist && state.currentPlaylist.id === pl.id) {
+              state.loadingTracksFor = null;
+              renderPlaylist();
+              render();
+            }
+          }).catch(function (e) {
+            console.error("ensureTracks failed:", e);
+            if (state.currentPlaylist && state.currentPlaylist.id === pl.id) {
+              state.loadingTracksFor = null;
+              renderPlaylist();
+            }
+          });
+        } else {
+          state.loadingTracksFor = null;
+          renderPlaylist();
+        }
         return true;
       }
     }
@@ -2783,21 +2279,48 @@ function activate(api) {
     renderPlaylist();
   });
 
+  // Fetch a playlist's tracks for a Play/Enqueue action, showing the host
+  // loading modal while a real scrape runs. Shows the modal only when the
+  // playlist isn't already cached/fresh (so cached playlists play instantly with
+  // no flash) AND no modal is already active (so a second concurrent Play — which
+  // withSpotifyWindow rejects — doesn't stomp the first's modal). Hides only the
+  // modal it itself showed, on every settle path (success, empty, OR error), so
+  // the blocking modal can never stick. Returns the tracks promise.
+  function fetchTracksWithLoading(pl) {
+    var showed = false;
+    if (!tracksAreFresh(pl) && !loadingModalActive) {
+      loadingModalActive = true;
+      showed = true;
+      api.requestAction("show-loading", { message: "Loading " + pl.name + "…" });
+    }
+    function done() {
+      if (showed) { loadingModalActive = false; api.requestAction("hide-loading", {}); }
+    }
+    return ensureTracks(pl).then(function (tracks) {
+      done();
+      return tracks;
+    }, function (e) {
+      done();
+      throw e;
+    });
+  }
+
   api.ui.onAction("play-current", function() {
     var pl = state.currentPlaylist;
     if (!pl) return;
-    var tracks = state.playlistTracks[pl.id] || [];
-    if (tracks.length === 0) return;
-    var ctx = playlistContextPayload(pl);
-    api.playback.playTracks(toPluginTracks(tracks), 0, ctx);
+    fetchTracksWithLoading(pl).then(function (tracks) {
+      if (!tracks || tracks.length === 0) return;
+      api.playback.playTracks(toPluginTracks(tracks), 0, playlistContextPayload(pl));
+    }).catch(function (e) { console.error(e); });
   });
 
   api.ui.onAction("enqueue-current", function() {
     var pl = state.currentPlaylist;
     if (!pl) return;
-    var tracks = state.playlistTracks[pl.id] || [];
-    if (tracks.length === 0) return;
-    api.playback.insertTracks(toPluginTracks(tracks), -1);
+    fetchTracksWithLoading(pl).then(function (tracks) {
+      if (!tracks || tracks.length === 0) return;
+      api.playback.insertTracks(toPluginTracks(tracks), -1);
+    }).catch(function (e) { console.error(e); });
   });
 
   // ---- Context menu actions for playlist cards ----
@@ -2860,18 +2383,30 @@ function activate(api) {
   api.ui.onAction("play-playlist", function(data) {
     var pl = findPlaylistFromData(data);
     if (!pl) return;
-    var tracks = state.playlistTracks[pl.id] || [];
-    if (tracks.length === 0) return;
-    var ctx = playlistContextPayload(pl);
-    api.playback.playTracks(toPluginTracks(tracks), 0, ctx);
+    fetchTracksWithLoading(pl).then(function (tracks) {
+      if (!tracks || tracks.length === 0) return;
+      api.playback.playTracks(toPluginTracks(tracks), 0, playlistContextPayload(pl));
+    }).catch(function (e) { console.error(e); });
   });
 
   api.ui.onAction("enqueue-playlist", function(data) {
     var pl = findPlaylistFromData(data);
     if (!pl) return;
-    var tracks = state.playlistTracks[pl.id] || [];
-    if (tracks.length === 0) return;
-    api.playback.insertTracks(toPluginTracks(tracks), -1);
+    fetchTracksWithLoading(pl).then(function (tracks) {
+      if (!tracks || tracks.length === 0) return;
+      api.playback.insertTracks(toPluginTracks(tracks), -1);
+    }).catch(function (e) { console.error(e); });
+  });
+
+  api.ui.onAction("refresh-tracks-ctx", function(data) {
+    var pl = findPlaylistFromData(data);
+    if (!pl) return;
+    api.ui.showNotification("Refreshing tracks for " + pl.name + "…");
+    ensureTracks(pl, { force: true }).then(function () {
+      if (state.currentPlaylist && state.currentPlaylist.id === pl.id) renderPlaylist();
+      render();
+      api.ui.showNotification("Refreshed " + pl.name);
+    }).catch(function (e) { console.error(e); api.ui.showNotification("Failed to refresh"); });
   });
 
   function savePlaylistToApp(pl) {
@@ -2927,55 +2462,6 @@ function activate(api) {
 
   // ---- Settings actions ----
 
-  api.ui.onAction("section-input", function(data) {
-    if (data && data.value !== undefined) {
-      pendingSectionInput = data.value;
-    }
-  });
-
-  api.ui.onAction("section-input:submit", function(data) {
-    if (data && data.value) pendingSectionInput = data.value;
-    var name = pendingSectionInput.trim();
-    if (!name) return;
-    for (var i = 0; i < state.sections.length; i++) {
-      if (state.sections[i].toLowerCase() === name.toLowerCase()) return;
-    }
-    state.sections.push(name);
-    pendingSectionInput = "";
-    api.storage.set("spotify_browse_sections", state.sections).catch(console.error);
-    renderSettings();
-    render();
-  });
-
-  api.ui.onAction("add-section", function() {
-    var name = pendingSectionInput.trim();
-    if (!name) return;
-    for (var i = 0; i < state.sections.length; i++) {
-      if (state.sections[i].toLowerCase() === name.toLowerCase()) return;
-    }
-    state.sections.push(name);
-    pendingSectionInput = "";
-    api.storage.set("spotify_browse_sections", state.sections).catch(console.error);
-    renderSettings();
-    render();
-  });
-
-  api.ui.onAction("remove-section", function(data) {
-    if (!data || data.index === undefined) return;
-    var idx = data.index;
-    if (idx >= 0 && idx < state.sections.length) {
-      var removed = state.sections[idx];
-      if (isLikedSection(removed)) return;
-      state.sections.splice(idx, 1);
-      api.storage.set("spotify_browse_sections", state.sections).catch(console.error);
-      if (state.activeTab === "section:" + removed) {
-        state.activeTab = state.sections.length > 0 ? "section:" + state.sections[0] : "__add__";
-      }
-      renderSettings();
-      render();
-    }
-  });
-
   api.ui.onAction("toggle-show-browser-pref", function() {
     state.showBrowserOnRefresh = !state.showBrowserOnRefresh;
     savePreferences();
@@ -2997,10 +2483,6 @@ function activate(api) {
   });
 
   // Step-by-step debugger actions
-  api.ui.onAction("dbg-section-name", function(data) {
-    if (data && data.value !== undefined) dbgTest.sectionName = data.value;
-  });
-
   api.ui.onAction("dbg-start", dbgStart);
   api.ui.onAction("dbg-stop", dbgStop);
 
@@ -3057,12 +2539,7 @@ function activate(api) {
   function buildShelfFetcher(sectionName) {
     return function (limit) {
       try {
-        var pls = isLikedSection(sectionName)
-          ? (function () {
-              var liked = getLikedPlaylist();
-              return liked ? [liked] : [];
-            })()
-          : getPlaylistsForSection(sectionName);
+        var pls = getPlaylistsForSection(sectionName);
         if (pls.length === 0) {
           return Promise.resolve({ status: "empty" });
         }
@@ -3076,7 +2553,9 @@ function activate(api) {
             id: String(pl.id),
             name: pl.name || "Unknown",
             coverUrl: pl.imageUrl || null,
-            trackCount: rawTracks.length,
+            // Home-shelf card subtitle = playlist description (blank until the
+            // playlist's tracks have been scraped). Replaces the old "N tracks".
+            subtitle: pl.description || undefined,
             tracks: toPluginTracks(rawTracks),
           };
         });
@@ -3092,13 +2571,8 @@ function activate(api) {
 
   function syncHomeShelves() {
     var desired = {};
-    // Liked Songs first if present.
-    if (getLikedPlaylist()) {
-      desired[shelfIdForSection(LIKED_SECTION)] = LIKED_SECTION;
-    }
     for (var i = 0; i < state.sections.length; i++) {
       var name = state.sections[i];
-      if (isLikedSection(name)) continue;
       desired[shelfIdForSection(name)] = name;
     }
 
@@ -3134,6 +2608,18 @@ function activate(api) {
           if (!item || !item.id) return;
           api.ui.navigateToView("spotify");
           openPlaylistById(String(item.id));
+        });
+      }
+      // Lazily resolve tracks when the host home-shelf play button is pressed for
+      // an un-fetched playlist (its supplied tracks were empty). The host shows
+      // its own loading modal while awaiting this. Guarded for older hosts.
+      if (typeof api.home.onResolvePlay === "function") {
+        api.home.onResolvePlay(id, function (item) {
+          var pl = item && item.id ? findPlaylistById(String(item.id)) : null;
+          if (!pl) return Promise.resolve([]);
+          return ensureTracks(pl).then(function (tracks) {
+            return toPluginTracks(tracks || []);
+          });
         });
       }
       registeredShelves[id] = sectionName;
@@ -3184,24 +2670,20 @@ function activate(api) {
   api.storage.files.remove(["archives"]).catch(function () { /* no-op if missing */ });
   api.storage.delete("spotify_browse_archives").catch(console.error);
 
-  // Load sections. Liked Songs is no longer a section — it's a pinned playlist
-  // rendered above the section tabs. Strip it from any persisted list left
-  // behind by a previous version.
+  // Sections are now derived from the scrape, but we keep the last-known list +
+  // descriptions as a cold-start render cache so shelves show before the first
+  // sync of a session completes.
   api.storage.get("spotify_browse_sections").then(function(sections) {
-    if (sections && Array.isArray(sections)) {
-      state.sections = sections;
-    }
-    var filtered = [];
-    var changed = false;
-    for (var i = 0; i < state.sections.length; i++) {
-      if (isLikedSection(state.sections[i])) { changed = true; continue; }
-      filtered.push(state.sections[i]);
-    }
-    if (changed) {
-      state.sections = filtered;
-      api.storage.set("spotify_browse_sections", state.sections).catch(console.error);
-    }
+    if (sections && Array.isArray(sections)) state.sections = sections;
+    render();
   }).catch(console.error);
+  api.storage.get("spotify_browse_section_descriptions").then(function(descs) {
+    if (descs && typeof descs === "object") state.sectionDescriptions = descs;
+  }).catch(console.error);
+
+  // One-time cleanup: remove the old Liked Songs on-disk directory and its
+  // synthetic playlist data (no longer supported). Safe no-op if absent.
+  api.storage.files.remove(["playlists", "Liked Songs"]).catch(function () {});
 
   // Load preferences
   api.storage.get("spotify_browse_preferences").then(function(prefs) {

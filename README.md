@@ -4,8 +4,7 @@ Browse your Spotify library (liked songs and playlists) inside Viboplr by
 scraping the Spotify web app via an embedded browser window. See `SPEC.md` for
 architecture details.
 
-Plugin id: `spotify-browse` (so an installed copy overrides the app's bundled
-built-in of the same id).
+Plugin id: `spotify-browse` (installed from the Viboplr plugin gallery).
 
 New to writing Viboplr plugins? See **[DEVELOPING.md](DEVELOPING.md)** for the
 develop/reload/debug workflow.
@@ -47,9 +46,3 @@ and that the zip has `manifest.json` at its root, then attaches `spotify.zip` +
 
 The update endpoint is the permanent
 `https://github.com/outcast1000/viboplr-spotify/releases/latest/download/update.json`.
-
-## Keep the app's bundled copy in sync
-
-The Viboplr app bundles a baseline copy at `src-tauri/plugins/spotify-browse/`.
-On each release, copy `index.js` + `manifest.json` back into that folder so new
-installs ship the latest baseline.
