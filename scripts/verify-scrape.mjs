@@ -26,6 +26,10 @@ function prompt(q) {
 async function installBridge(page) {
   const queue = [];
   const waiters = [];
+  // No lock needed: Node runs this single-threaded. wait() checks the queue and
+  // registers its waiter synchronously (no await between), and exposeFunction
+  // callbacks run as separate tasks — so a message either finds a waiting waiter
+  // or lands in the queue that wait() checks first. The two can't interleave.
   await page.exposeFunction("__viboplrCollect", (msg) => {
     const i = waiters.findIndex((w) => w.type === msg.type);
     if (i >= 0) { const w = waiters.splice(i, 1)[0]; clearTimeout(w.timer); w.resolve(msg.data); }
@@ -62,14 +66,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   const S = extractScripts(INDEX_PATH);
 
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
-    viewport: { width: 1280, height: 900 },
-  });
-  const page = ctx.pages()[0] || (await ctx.newPage());
-  const bridge = await installBridge(page);
-
+  let ctx;
   try {
+    ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
+      headless: false,
+      viewport: { width: 1280, height: 900 },
+    });
+    const page = ctx.pages()[0] || (await ctx.newPage());
+    const bridge = await installBridge(page);
+
     // --- Step 1: login ---
     await page.goto(S.MUSIC_CHIP_URL, { waitUntil: "domcontentloaded" });
     await sleep(SETTLE_MS);
@@ -89,7 +94,13 @@ async function main() {
 
     // --- Step 2: scrape shelves ---
     await page.evaluate((s) => eval(s), S.SCRIPT_SCRAPE_SHELVES);
-    const shelvesData = await bridge.wait("shelves");
+    let shelvesData;
+    try {
+      shelvesData = await bridge.wait("shelves");
+    } catch (e) {
+      console.error("✗ shelf scrape timed out — continuing to verdict:", e.message);
+      shelvesData = { shelves: [] };
+    }
     const shelves = shelvesData.shelves || [];
     const allPlaylists = shelves.flatMap((sh) => sh.playlists || []);
 
@@ -98,10 +109,15 @@ async function main() {
     if (allPlaylists.length > 0) {
       const pl = allPlaylists[0];
       await page.evaluate((s) => eval(s), S.scriptNavigatePlaylist(pl.id));
-      await sleep(SETTLE_MS + 500);
+      await sleep(SETTLE_MS + 500); // extra margin for the playlist page to settle
       await bridge.ensure();
-      await page.evaluate((s) => eval(s), S.scriptScrollThenScrape(pl.id, 999));
-      tracksData = await bridge.wait("tracks");
+      await page.evaluate((s) => eval(s), S.scriptScrollThenScrape(pl.id, 999)); // 999 = scrape the full playlist
+      try {
+        tracksData = await bridge.wait("tracks");
+      } catch (e) {
+        console.error("✗ track scrape timed out — continuing to verdict:", e.message);
+        tracksData = { tracks: [] };
+      }
     }
 
     // --- Verdict ---
@@ -126,6 +142,10 @@ async function main() {
     if (shelves.length === 0) failures.push("0 shelves found");
     if (allPlaylists.length === 0) failures.push("0 playlist cards across all shelves");
     if (allPlaylists.length > 0 && tracks.length === 0) failures.push("sampled playlist returned 0 tracks");
+    // Shape checks: catch the scrape returning objects of the wrong shape even
+    // when counts look fine (the whole point of this harness is early warning).
+    if (allPlaylists.length > 0 && !allPlaylists[0].id) failures.push("first playlist card missing .id (shape regression)");
+    if (tracks.length > 0 && !tracks[0].name) failures.push("first track missing .name (shape regression)");
 
     if (failures.length > 0) {
       console.log("\n✗ FAIL:\n  - " + failures.join("\n  - "));
@@ -134,7 +154,7 @@ async function main() {
       console.log("\n✓ PASS");
     }
   } finally {
-    await ctx.close();
+    if (ctx) await ctx.close();
   }
 }
 
