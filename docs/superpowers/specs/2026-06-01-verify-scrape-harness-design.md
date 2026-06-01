@@ -119,7 +119,9 @@ Prints a human-readable summary to stdout:
 - script extraction failed (missing markers / eval error)
 - not logged in after the manual-login prompt
 - 0 shelves found
-- any shelf has 0 cards
+- 0 playlist cards across all shelves (note: the scrape script only emits
+  shelves that already have ≥1 card, so "an empty shelf" can't occur — we assert
+  on the total instead)
 - 0 tracks on the sampled playlist
 
 Otherwise exit 0. This makes the verdict machine-readable for Claude or CI.
