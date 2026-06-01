@@ -46,18 +46,20 @@ through `MUSIC_CHIP_URL`, including the `scriptNavigatePlaylist` /
 `scriptScrollThenScrape` builder functions) is wrapped in sentinel comments:
 
 ```js
-// >>> SCRAPE-SCRIPTS-START  (do not remove: scripts/verify-scrape.mjs slices between these)
+// >>> SCRAPE-SCRIPTS-START  (do not remove: scripts/extract-scripts.mjs slices between these)
 var DBG_HELPER = ...
 ...
 var MUSIC_CHIP_URL = "https://open.spotify.com/home?facet=music-chip";
 // <<< SCRAPE-SCRIPTS-END
 ```
 
-The harness reads `index.js`, slices the text between the two markers, and
-evaluates that block in a Node `vm` context with a minimal `window` / `console`
-stub. The block only performs string concatenation and function definitions and
-has **no dependency on `api`**, so the stub is never actually exercised at build
-time. The harness then reads these symbols out of the VM context:
+Extraction is factored into a small standalone module, `scripts/extract-scripts.mjs`
+(so it is unit-testable on its own); the harness imports it. The module reads
+`index.js`, slices the text between the two markers, and evaluates that block in a
+Node `vm` context with a minimal `window` / `console` stub. The block only performs
+string concatenation and function definitions and has **no dependency on `api`**, so
+the stub is never actually exercised at build time. It then reads these symbols out
+of the VM context:
 
 - `SCRIPT_CHECK_LOGIN` (string)
 - `SCRIPT_SCRAPE_SHELVES` (string)
@@ -129,9 +131,12 @@ Otherwise exit 0. This makes the verdict machine-readable for Claude or CI.
 ## Files
 
 **New:**
-- `scripts/verify-scrape.mjs` — the harness.
+- `scripts/verify-scrape.mjs` — the harness CLI (Playwright driver + verdict).
+- `scripts/extract-scripts.mjs` — the extraction seam (slice + vm-eval), imported
+  by the harness and unit-tested independently.
+- `scripts/extract-scripts.test.mjs` — `node --test` unit test for extraction.
 - `package.json` — repo currently has none (the plugin ships without one). Adds
-  `playwright` as a `devDependency` and a `verify:scrape` script. The plugin
+  `playwright` as a `devDependency` and `verify:scrape` + `test` scripts. The plugin
   release artifact is unaffected (`scripts/package.sh` zips only plugin files).
 - `.gitignore` additions: `scripts/.spotify-profile/`, `node_modules/`.
 
