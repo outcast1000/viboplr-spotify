@@ -1,0 +1,14 @@
+{
+  "name": "viboplr-spotify-dev",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev tooling for the spotify-browse Viboplr plugin (NOT shipped in the plugin release)",
+  "scripts": {
+    "verify:scrape": "node scripts/verify-scrape.mjs",
+    "test": "node --test scripts/"
+  },
+  "devDependencies": {
+    "playwright": "^1.48.0"
+  }
+}
