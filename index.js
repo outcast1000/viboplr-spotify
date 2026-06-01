@@ -1573,19 +1573,62 @@ function activate(api) {
       '_dbg("shelves","DONE",{shelfCount:out.length,total:total,noCover:countNoCover(),sectionEls:document.querySelectorAll("section").length,headings:names});' +
       'window.__viboplr.send("shelves",{shelves:out,total:total});' +
     '}' +
-    // Incremental scroll on the real container: sweep, advance one viewport,
-    // repeat until the bottom is stable or we hit the step cap.
+    // Real (vertical) scroll container. CRITICAL: Spotify also lays each shelf out
+    // as a HORIZONTAL CAROUSEL that virtualizes its cards — cards parked off the
+    // right edge are never mounted, so their lazy <img> never enters a viewport,
+    // never loads, and bestImg() returns null forever no matter how long we wait
+    // vertically. So at each vertical stop we must scroll every visible carousel
+    // fully left-to-right, sweeping (with a beat for lazy imgs) at each step.
     'var sc=findScrollContainer();' +
-    'var step=Math.max(sc.clientHeight-50,200);' +
+    'var vStep=Math.max(sc.clientHeight-50,200);' +
     'var ticks=0;var lastTop=-1;var stable=0;' +
     'sc.scrollTop=0;' +
-    // Final phase: OSCILLATE through the feed (up, then back down, repeating)
-    // sweeping at every stop until no card is missing a cover or the pass budget
-    // runs out. A one-directional pass gives each card a single retry in a fixed
-    // window; Spotify virtualizes the feed (unmounts off-screen cards) and lazy-
-    // loads card <img>s a beat after mount, so a card showing a placeholder in
-    // that one window is lost. Reversing direction at each edge re-mounts those
-    // cards and gives their lazy images several more chances to resolve.
+    // Find each shelf's horizontal carousel: walk up from a playlist card to the
+    // nearest ancestor that actually scrolls horizontally (overflow-x auto/scroll
+    // with real overflow). De-duped. Recomputed each call because Spotify unmounts
+    // shelves that scroll out of vertical view (and remounts them at scrollLeft 0).
+    'function carousels(){' +
+      'var mainEl=document.querySelector("main")||document.body;' +
+      'var links=mainEl.querySelectorAll("a[href*=\\"/playlist/\\"]");' +
+      'var out=[];' +
+      'for(var i=0;i<links.length;i++){' +
+        'var node=links[i];' +
+        'for(var up=0;up<10&&node&&node!==document.body;up++){' +
+          'var cs=window.getComputedStyle(node);' +
+          'var ox=cs.overflowX;' +
+          'if((ox==="auto"||ox==="scroll")&&node.scrollWidth>node.clientWidth+4){if(out.indexOf(node)===-1)out.push(node);break;}' +
+          'node=node.parentElement;' +
+        '}' +
+      '}' +
+      'return out;' +
+    '}' +
+    // Advance every still-scrollable carousel one near-viewport step right (slight
+    // overlap so a card gets >=2 sweeps). Returns how many moved (0 => all exhausted).
+    'function advanceCarousels(){' +
+      'var cs=carousels();var moved=0;' +
+      'for(var i=0;i<cs.length;i++){var c=cs[i];' +
+        'if(c.scrollLeft+c.clientWidth<c.scrollWidth-4){' +
+          'c.scrollLeft=Math.min(c.scrollWidth,c.scrollLeft+Math.max(c.clientWidth-60,160));moved++;' +
+        '}' +
+      '}' +
+      'return moved;' +
+    '}' +
+    // Exhaust all visible carousels horizontally at the current vertical stop,
+    // sweeping at each step. Imgs from the previous step resolve during the delay
+    // and are backfilled by the next sweep. hSteps is a global runaway cap.
+    'var hSteps=0;' +
+    'function hExhaust(done){' +
+      'sweep();' +
+      'if(hSteps>=140){done();return;}' +
+      'var moved=advanceCarousels();' +
+      'if(moved===0){done();return;}' +
+      'hSteps++;' +
+      'setTimeout(function(){try{hExhaust(done)}catch(e){_fail(e)}},250);' +
+    '}' +
+    // Final phase: OSCILLATE vertically (up, then back down, repeating) sweeping at
+    // every stop until no card is missing a cover or the pass budget runs out. This
+    // is the lazy-img backfill for cards near each carousel's start; horizontally-
+    // distant cards were already captured during the descent.
     'var settleDir=-1;' +
     'function settlePass(passes){' +
       'sweep();' +
@@ -1594,19 +1637,23 @@ function activate(api) {
       'var atBot=sc.scrollTop+sc.clientHeight>=sc.scrollHeight-10;' +
       // Reverse at either edge so we keep re-traversing the whole feed.
       'if(atTop)settleDir=1;else if(atBot)settleDir=-1;' +
-      'sc.scrollTop=Math.max(0,sc.scrollTop+settleDir*step);' +
+      'sc.scrollTop=Math.max(0,sc.scrollTop+settleDir*vStep);' +
       'setTimeout(function(){try{settlePass(passes-1)}catch(e){_fail(e)}},250);' +
     '}' +
-    'function scrollTick(){try{' +
-      'sweep();' +
-      'ticks++;' +
-      'var atBottom=sc.scrollTop+sc.clientHeight>=sc.scrollHeight-10;' +
-      'if(sc.scrollTop===lastTop){stable++;}else{stable=0;lastTop=sc.scrollTop;}' +
-      'if(atBottom||stable>=3||ticks>=60){setTimeout(function(){try{settlePass(60)}catch(e){_fail(e)}},400);return;}' +
-      'sc.scrollTop+=step;' +
-      'setTimeout(scrollTick,350);' +
+    // Vertical descent: at each stop, fully sweep carousels horizontally, THEN
+    // advance one viewport. Order matters — a carousel must be exhausted while its
+    // shelf is mounted/visible, because Spotify virtualizes vertically too.
+    'function descend(){try{' +
+      'hExhaust(function(){' +
+        'ticks++;' +
+        'if(sc.scrollTop===lastTop){stable++;}else{stable=0;lastTop=sc.scrollTop;}' +
+        'var atBottom=sc.scrollTop+sc.clientHeight>=sc.scrollHeight-10;' +
+        'if(atBottom||stable>=3||ticks>=40){setTimeout(function(){try{settlePass(30)}catch(e){_fail(e)}},300);return;}' +
+        'sc.scrollTop+=vStep;' +
+        'setTimeout(descend,300);' +
+      '});' +
     '}catch(e){_fail(e)}}' +
-    'scrollTick();' +
+    'descend();' +
     '}catch(e){window.__viboplr.send("error",{message:"scrape shelves: "+e})}})()';
 
   function scriptNavigatePlaylist(id) {
@@ -1809,8 +1856,11 @@ function activate(api) {
 
       api.network.openBrowseWindow(url, {
         title: "Spotify",
-        width: 1200,
-        height: 800,
+        // Wider viewport so each shelf's horizontal carousel shows more cards per
+        // step — fewer scroll steps to exhaust it, and fewer lazy <img>s racing the
+        // sweep (the carousel scroll in SCRIPT_SCRAPE_SHELVES does the real work).
+        width: 1600,
+        height: 900,
         visible: visible,
       }).then(function (h) {
         handle = h;
@@ -1882,13 +1932,16 @@ function activate(api) {
         var done = false;
         // Backstop: if the page never sends shelves/error (stalled navigation or
         // an eval that silently failed to run), don't hang forever — resolve
-        // empty after a generous timeout. The scroll+scrape itself caps well
-        // under this (~18s worst case incl. the 1s+4s nav delays).
+        // empty after a generous timeout. The scroll+scrape itself can run long
+        // now that each shelf's carousel is exhausted horizontally: the global
+        // horizontal cap (~140 steps x 250ms = 35s) plus the vertical descent
+        // (~40 x 300ms) plus the settle oscillation (~30 x 250ms) plus the 1s+4s
+        // nav delays put the realistic worst case near ~75s, so allow margin.
         var scrapeTimeout = setTimeout(function () {
           if (done) return;
           plog("warn", "shelves", "music-chip scrape timed out — resolving empty");
           finishScrape([], [], {});
-        }, 60000);
+        }, 120000);
         function finishScrape(playlists, sections, sectionDescriptions) {
           if (done) return;
           done = true;
