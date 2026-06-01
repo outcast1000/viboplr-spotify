@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.12.4
+- Fix dozens of phantom, cover-less playlists appearing after sync. Mix cards
+  list their seed artists in the subtitle ("With Franz Ferdinand, Wunderhorse
+  and more") as `/playlist/` links; the home-page scrape was mistaking these
+  decorative credit links for real playlist cards. The scrape now skips any
+  `/playlist/` link inside a card subtitle, so only browsable cards (which have
+  their own cover) are captured.
+
 ## v1.12.1
 - Fix playlists missing covers after sync: the home-page settle phase now
   oscillates (up then back down, repeating) and re-traverses the virtualized

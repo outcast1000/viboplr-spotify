@@ -1549,6 +1549,15 @@ function activate(api) {
         '}' +
         'var m=(el.getAttribute("href")||"").match(/\\/playlist\\/([a-zA-Z0-9]+)/);' +
         'if(!m)continue;' +
+        // Skip seed/credit links embedded in a card SUBTITLE ("With Franz
+        // Ferdinand, Wunderhorse and more" on a mix card). These are decorative
+        // /playlist/ links living inside ANOTHER card\'s subtitle
+        // ([data-encore-id="cardSubtitle"], id="card-subtitle-spotify:playlist:..."),
+        // NOT browsable cards — they have no cover of their own (the cover belongs
+        // to the parent mix card, captured separately) and previously produced
+        // dozens of phantom, cover-less playlists. A real card TITLE link is never
+        // inside a cardSubtitle.
+        'if(el.closest("[data-encore-id=\\"cardSubtitle\\"],[id^=\\"card-subtitle\\"]"))continue;' +
         'var nm=(el.textContent||"").trim();' +
         'var img=findImgContainer(el);' +
         'var sub=cardSubtitle(el,nm);' +
