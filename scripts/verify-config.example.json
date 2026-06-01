@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy to verify-config.json (gitignored) to preset options for `npm run verify:scrape`. Every key is optional; omitted keys fall back to built-in defaults. Env vars (VERIFY_*) override this file for a single run. These mirror the plugin's host settings — see the options block in verify-scrape.mjs.",
+
+  "showBrowser": true,
+  "debug": false,
+  "maxSteps": 999,
+  "channel": "chrome",
+  "locale": "en-US",
+  "timezone": "America/New_York",
+  "settleMs": 4500,
+  "stepTimeoutMs": 30000
+}

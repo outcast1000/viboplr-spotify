@@ -3,6 +3,11 @@
 // shelves, then navigate + scrape one playlist's tracks.
 //
 //   npm run verify:scrape
+//   VERIFY_HEADLESS=1 VERIFY_DEBUG=1 npm run verify:scrape   # change options inline
+//
+// Options ("plugin settings", emulated for the host-less harness) are resolved
+// from DEFAULTS < scripts/verify-config.json < VERIFY_* env vars — see the
+// options block below, and verify-config.example.json.
 //
 // First run: a headed Chromium opens; log into Spotify, then press Enter. The
 // login persists in scripts/.spotify-profile/ (gitignored) for later runs.
@@ -13,16 +18,91 @@
 // (cover-less, nameless, or id-only "phantom" cards) and any scrape errors.
 import { chromium } from "playwright";
 import { createInterface } from "node:readline/promises";
-import { stdin, stdout, platform } from "node:process";
-import { writeFileSync } from "node:fs";
+import { stdin, stdout, platform, env } from "node:process";
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { extractScripts } from "./extract-scripts.mjs";
 
 const PROFILE_DIR = new URL("./.spotify-profile/", import.meta.url).pathname;
 const INDEX_PATH = new URL("../index.js", import.meta.url).pathname;
 const REPORT_PATH = new URL("./verify-report.html", import.meta.url).pathname;
-const SETTLE_MS = 4500; // matches the host's post-navigation waits
-const STEP_TIMEOUT_MS = 30000;
+const CONFIG_PATH = new URL("./verify-config.json", import.meta.url).pathname;
+
+// ---- Options ("plugin settings", emulated for the host-less harness) ----
+//
+// The host stores these in api.storage (spotify_browse_preferences) and lets
+// the user toggle them in the settings panel. Here there is no host, so we
+// surface the run-affecting equivalents as harness options, resolved with this
+// precedence (later wins): built-in DEFAULTS < scripts/verify-config.json
+// (optional, gitignored) < VERIFY_* environment variables. So you can change a
+// setting for one run inline, e.g.
+//   VERIFY_HEADLESS=1 VERIFY_DEBUG=1 npm run verify:scrape
+// or persist a set in verify-config.json.
+//
+// Mapping to the plugin's real settings:
+//   showBrowser  -> showBrowserOnRefresh (headed vs. headless window)
+//   debug        -> debugLogging (surface the injected scripts' _dbg stream)
+//   maxSteps     -> scrape depth (host uses 60; 999 = "scrape the full playlist")
+//   channel/locale/timezone -> impersonation knobs (see launch comment below)
+const DEFAULTS = {
+  showBrowser: true,     // headed window; set false to run headless
+  debug: false,          // log the page's _dbg messages to the console
+  maxSteps: 999,         // track-scrape scroll budget for the sampled playlist
+  channel: "chrome",     // real Chrome; "" or "chromium" for bundled Chromium
+  locale: "en-US",
+  timezone: "America/New_York",
+  settleMs: 4500,        // post-navigation wait (host parity)
+  stepTimeoutMs: 30000,  // per-message wait before a step is a timeout
+};
+
+// Read an optional JSON config file; missing/!invalid -> {} (warn, don't fail).
+function readConfigFile() {
+  if (!existsSync(CONFIG_PATH)) return {};
+  try {
+    return JSON.parse(readFileSync(CONFIG_PATH, "utf8")) || {};
+  } catch (e) {
+    console.error(`(ignoring invalid ${CONFIG_PATH}: ${e.message})`);
+    return {};
+  }
+}
+
+// Parse a "1/0/true/false/yes/no" env string to bool; undefined if unset.
+function envBool(name) {
+  const v = env[name];
+  if (v == null || v === "") return undefined;
+  return /^(1|true|yes|on)$/i.test(v);
+}
+function envNum(name) {
+  const v = env[name];
+  if (v == null || v === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+function envStr(name) {
+  const v = env[name];
+  return v == null || v === "" ? undefined : v;
+}
+
+// Resolve final options: DEFAULTS < file < env. `undefined` overrides are
+// dropped by the ?? chain so an unset env var never clobbers a file/default.
+function resolveOptions() {
+  const file = readConfigFile();
+  const pick = (key, envVal) => (envVal !== undefined ? envVal : (file[key] !== undefined ? file[key] : DEFAULTS[key]));
+  return {
+    showBrowser: pick("showBrowser", envBool("VERIFY_HEADLESS") === undefined ? undefined : !envBool("VERIFY_HEADLESS")),
+    debug: pick("debug", envBool("VERIFY_DEBUG")),
+    maxSteps: pick("maxSteps", envNum("VERIFY_MAX_STEPS")),
+    channel: pick("channel", envStr("VERIFY_CHANNEL")),
+    locale: pick("locale", envStr("VERIFY_LOCALE")),
+    timezone: pick("timezone", envStr("VERIFY_TIMEZONE")),
+    settleMs: pick("settleMs", envNum("VERIFY_SETTLE_MS")),
+    stepTimeoutMs: pick("stepTimeoutMs", envNum("VERIFY_STEP_TIMEOUT_MS")),
+  };
+}
+
+const OPTS = resolveOptions();
+const SETTLE_MS = OPTS.settleMs;
+const STEP_TIMEOUT_MS = OPTS.stepTimeoutMs;
 
 function prompt(q) {
   const rl = createInterface({ input: stdin, output: stdout });
@@ -39,6 +119,14 @@ async function installBridge(page) {
   // callbacks run as separate tasks — so a message either finds a waiting waiter
   // or lands in the queue that wait() checks first. The two can't interleave.
   await page.exposeFunction("__viboplrCollect", (msg) => {
+    // debugLogging equivalent: the injected scrape scripts emit "dbg" messages
+    // (the host routes these to api.log). Surface them to the console when the
+    // debug option is on; they are diagnostic only, never awaited as a step.
+    if (msg.type === "dbg" && OPTS.debug && msg.data) {
+      console.log(`  [dbg:${msg.data.tag || "?"}] ${msg.data.msg || ""}`,
+        msg.data.data !== undefined ? msg.data.data : "");
+      return;
+    }
     const i = waiters.findIndex((w) => w.type === msg.type);
     if (i >= 0) { const w = waiters.splice(i, 1)[0]; clearTimeout(w.timer); w.resolve(msg.data); }
     else queue.push(msg);
@@ -175,6 +263,7 @@ function buildReportHtml({ shelves, errors, sampled, login }) {
 <header>
   <h1>Spotify scrape verification report</h1>
   <div class="gen">Generated ${esc(generatedAt)} · logged in: ${login && login.loggedIn ? "yes" : "no"}</div>
+  <div class="gen">options: ${esc(JSON.stringify(OPTS))}</div>
 </header>
 <div class="summary">
   <div class="box"><h3>Shelves</h3><div class="stat">${shelves.length}</div></div>
@@ -214,15 +303,20 @@ async function main() {
     //   3. --disable-blink-features=AutomationControlled — belt-and-suspenders
     //      for navigator.webdriver.
     //   4. locale/timezone — a plausible, consistent regional fingerprint.
-    ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-      headless: false,
-      channel: "chrome",
+    // All four (plus headed/headless) are configurable via OPTS — see the
+    // options block at the top of this file.
+    console.log("options:", JSON.stringify(OPTS));
+    const launchOpts = {
+      headless: !OPTS.showBrowser,
       viewport: { width: 1280, height: 900 },
-      locale: "en-US",
-      timezoneId: "America/New_York",
+      locale: OPTS.locale,
+      timezoneId: OPTS.timezone,
       ignoreDefaultArgs: ["--enable-automation"],
       args: ["--disable-blink-features=AutomationControlled"],
-    });
+    };
+    // Empty/"chromium" channel => use Playwright's bundled Chromium.
+    if (OPTS.channel && OPTS.channel !== "chromium") launchOpts.channel = OPTS.channel;
+    ctx = await chromium.launchPersistentContext(PROFILE_DIR, launchOpts);
     const page = ctx.pages()[0] || (await ctx.newPage());
     const bridge = await installBridge(page);
 
@@ -268,7 +362,8 @@ async function main() {
       await page.evaluate((s) => eval(s), S.scriptNavigatePlaylist(pl.id));
       await sleep(SETTLE_MS + 500); // extra margin for the playlist page to settle
       await bridge.ensure();
-      await page.evaluate((s) => eval(s), S.scriptScrollThenScrape(pl.id, 999)); // 999 = scrape the full playlist
+      // gen arg is irrelevant here (single run); maxSteps from OPTS (999 = full).
+      await page.evaluate((s) => eval(s), S.scriptScrollThenScrape(pl.id, 999, { maxSteps: OPTS.maxSteps }));
       try {
         tracksData = await bridge.wait("tracks");
       } catch (e) {

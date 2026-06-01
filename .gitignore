@@ -3,3 +3,4 @@ update.json
 node_modules/
 scripts/.spotify-profile/
 scripts/verify-report.html
+scripts/verify-config.json
