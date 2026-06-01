@@ -1354,6 +1354,7 @@ function activate(api) {
 
   // ---- Injected scripts (plain strings for eval) ----
 
+  // >>> SCRAPE-SCRIPTS-START (do not remove: scripts/extract-scripts.mjs slices between these markers)
   var DBG_HELPER =
     'function _dbg(tag,msg,data){' +
       'console.log("[spotify-dbg]",tag,msg,data);' +
@@ -1817,6 +1818,7 @@ function activate(api) {
   //
   // Resolves null if the scrape was cancelled or the window closed before login.
   var MUSIC_CHIP_URL = "https://open.spotify.com/home?facet=music-chip";
+  // <<< SCRAPE-SCRIPTS-END
 
   function withSpotifyWindow(opts, fn) {
     var url = (opts && opts.url) || MUSIC_CHIP_URL;
