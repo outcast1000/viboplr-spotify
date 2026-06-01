@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.12.5
+- Internal cleanup, no behavior change to syncing or scraping:
+  - Removed the never-populated per-section/per-playlist diagnostics machinery
+    (section status/attempts/snapshots, playlist failure lists) left over from
+    the multi-section scraper. The single-page sync never wrote to it, so the
+    Diagnostics panel no longer shows a misleading "(music-chip home) — pending"
+    section, and the run report/log dropped the unused structured `log` array.
+  - De-duplicated the playlist-by-id lookup (one `findPlaylistById` +
+    `parsePlaylistId`) and the Spotify login-signal lists (one shared
+    `POSITIVE/NEGATIVE_LOGIN_SIGNALS`), so they can no longer drift.
+  - Removed the dead `getStatusText` branches and made `escapeHtml` escape
+    quotes so it's safe in HTML attributes, not just text.
+- Fix: a fresh install now correctly shows the "No playlists yet — click Sync"
+  prompt and registers no phantom home shelf, instead of seeding a hardcoded
+  "Made for You" section before the first sync.
+
 ## v1.12.4
 - Fix dozens of phantom, cover-less playlists appearing after sync. Mix cards
   list their seed artists in the subtitle ("With Franz Ferdinand, Wunderhorse

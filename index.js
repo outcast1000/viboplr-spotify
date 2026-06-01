@@ -29,7 +29,11 @@ function activate(api) {
     lastCheckAt: null,
     lastCheckResult: null,
     refreshSummary: "",
-    sections: ["Made for You"],
+    // Section names are derived from each scrape and persisted to
+    // spotify_browse_sections (loaded back at init). Start empty so a fresh
+    // install shows the "No playlists yet" prompt and registers no phantom
+    // shelves before the first sync.
+    sections: [],
     lastReport: null,
     showDiagnostics: false,
     // Per-playlist search query (only used in the detail view). Keyed by
@@ -60,14 +64,16 @@ function activate(api) {
 
   // ---- Helpers ----
 
+  // Escapes text for HTML. Also escapes quotes so the result is safe in an
+  // attribute value, not just element text.
   function escapeHtml(s) {
     if (!s) return "";
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
   // ---- Diagnostics: unified logger + run report ----
 
-  var MAX_REPORT_LOG_ENTRIES = 500;
   var MAX_STORED_REPORTS = 5;
   var activeReport = null;
 
@@ -78,13 +84,7 @@ function activate(api) {
     else if (level === "warn") console.warn("[spotify]", line);
     else console.log("[spotify]", line);
     api.log(level, line, "spotify-browse");
-    if (activeReport) {
-      activeReport.log.push({ ts: Date.now(), level: level, tag: tag, msg: msg, data: data });
-      if (activeReport.log.length > MAX_REPORT_LOG_ENTRIES) {
-        activeReport.log.splice(0, activeReport.log.length - MAX_REPORT_LOG_ENTRIES);
-      }
-      appendSyncLine(level, tag, msg, data);
-    }
+    if (activeReport) appendSyncLine(level, tag, msg, data);
   }
 
   // Human-readable per-run log accumulator. Lines are appended in order as the
@@ -112,7 +112,7 @@ function activate(api) {
     catch (e) { return "[unstringifiable]"; }
   }
 
-  function beginReport(trigger, sectionsToScrape) {
+  function beginReport(trigger) {
     activeReport = {
       trigger: trigger,
       startedAt: new Date().toISOString(),
@@ -120,19 +120,11 @@ function activate(api) {
       durationMs: 0,
       outcome: "running",
       errorMessage: null,
-      sections: sectionsToScrape.map(function (n) {
-        return { name: n, status: "pending", attempts: 0, playlistCount: 0, snapshot: null };
-      }),
-      playlists: [],
-      log: [],
       // Detailed sync trace (persisted as the per-run logs/YYYYMMDD-HHMMSS.log)
       formattedLog: [],
       pageVisits: [],   // [{url, phase, ts}]
     };
-    syncNote("sync", "=== Spotify sync started ===", {
-      trigger: trigger,
-      sections: sectionsToScrape,
-    });
+    syncNote("sync", "=== Spotify sync started ===", { trigger: trigger });
   }
 
   function recordPageVisit(url, phase) {
@@ -150,36 +142,6 @@ function activate(api) {
     lines.push("Outcome: " + report.outcome + (report.errorMessage ? " — " + report.errorMessage : ""));
     lines.push("");
 
-    // Sections summary
-    lines.push("--- Sections ---");
-    for (var i = 0; i < (report.sections || []).length; i++) {
-      var s = report.sections[i];
-      lines.push("  " + s.name + ": " + s.status +
-        " (attempts=" + (s.attempts || 0) + ", playlists=" + (s.playlistCount || 0) + ")");
-    }
-    lines.push("");
-
-    // Playlists summary
-    var totalTracks = 0;
-    var okPl = 0, emptyPl = 0, errPl = 0, timeoutPl = 0;
-    lines.push("--- Playlists (" + (report.playlists || []).length + ") ---");
-    for (var p = 0; p < (report.playlists || []).length; p++) {
-      var pl = report.playlists[p];
-      totalTracks += (pl.trackCount || 0);
-      if (pl.status === "ok") okPl++;
-      else if (pl.status === "empty") emptyPl++;
-      else if (pl.status === "error") errPl++;
-      else if (pl.status === "timeout") timeoutPl++;
-      lines.push("  [" + pl.status + "] " + (pl.name || "?") +
-        " (id=" + pl.id + ", section=" + (pl.section || "?") + ")" +
-        " — " + (pl.trackCount || 0) + " tracks in " + Math.round((pl.durationMs || 0) / 1000) + "s" +
-        (pl.error ? " — error: " + pl.error : ""));
-    }
-    lines.push("");
-    lines.push("  Totals: " + totalTracks + " tracks across " + (report.playlists || []).length +
-      " playlists (ok=" + okPl + ", empty=" + emptyPl + ", error=" + errPl + ", timeout=" + timeoutPl + ")");
-    lines.push("");
-
     // Pages visited
     lines.push("--- Pages visited (" + (report.pageVisits || []).length + ") ---");
     for (var v = 0; v < (report.pageVisits || []).length; v++) {
@@ -187,44 +149,6 @@ function activate(api) {
       lines.push("  [" + (pv.phase || "?") + "] " + pv.url);
     }
     lines.push("");
-
-    // Per-section snapshots (if any captured for failures)
-    var hasSnap = false;
-    for (var ss = 0; ss < (report.sections || []).length; ss++) {
-      if (report.sections[ss].snapshot) { hasSnap = true; break; }
-    }
-    if (!hasSnap) {
-      for (var ps = 0; ps < (report.playlists || []).length; ps++) {
-        if (report.playlists[ps].snapshot) { hasSnap = true; break; }
-      }
-    }
-    if (hasSnap) {
-      lines.push("--- Failure snapshots ---");
-      for (var sx = 0; sx < (report.sections || []).length; sx++) {
-        var sec = report.sections[sx];
-        if (sec.snapshot) {
-          lines.push("  section '" + sec.name + "' snapshot:");
-          lines.push("    url: " + (sec.snapshot.url || "?"));
-          lines.push("    title: " + (sec.snapshot.title || "?"));
-          lines.push("    counts: " + safeStringify(sec.snapshot.counts || {}));
-          if (sec.snapshot.testids) {
-            lines.push("    testids (top 20): " + sec.snapshot.testids.slice(0, 20).join(", "));
-          }
-        }
-      }
-      for (var px = 0; px < (report.playlists || []).length; px++) {
-        var pp = report.playlists[px];
-        if (pp.snapshot) {
-          lines.push("  playlist '" + (pp.name || "?") + "' (" + pp.id + ") snapshot:");
-          lines.push("    url: " + (pp.snapshot.url || "?"));
-          lines.push("    counts: " + safeStringify(pp.snapshot.counts || {}));
-          if (pp.snapshot.testids) {
-            lines.push("    testids (top 20): " + pp.snapshot.testids.slice(0, 20).join(", "));
-          }
-        }
-      }
-      lines.push("");
-    }
 
     // Full ordered trace
     lines.push("--- Trace (" + (report.formattedLog || []).length + " lines) ---");
@@ -679,13 +603,6 @@ function activate(api) {
     renderHome();
   }
 
-  function getStatusText() {
-    if (state.status === "waiting-login") return "Waiting for login…";
-    if (state.status === "error") return state.errorMessage;
-    if (state.refreshSummary) return state.refreshSummary;
-    return "";
-  }
-
   function isActiveStatus() {
     return state.status === "waiting-login";
   }
@@ -705,7 +622,7 @@ function activate(api) {
     var statusVariant = "default";
 
     if (isActive) {
-      statusText = getStatusText();
+      statusText = "Waiting for login…";
     } else if (state.status === "error") {
       statusText = state.errorMessage;
       statusVariant = "error";
@@ -983,52 +900,8 @@ function activate(api) {
     header += "</p>";
     children.push({ type: "text", content: header });
 
-    if (rep.sections && rep.sections.length) {
-      var secLines = "<p><b>Sections:</b></p><ul>";
-      for (var si = 0; si < rep.sections.length; si++) {
-        var sec = rep.sections[si];
-        secLines += "<li>" + escapeHtml(sec.name) + " — <b>" + escapeHtml(sec.status) + "</b>, " +
-          sec.playlistCount + " playlists, " + (sec.attempts || 0) + " attempt" + (sec.attempts === 1 ? "" : "s");
-        if (sec.snapshot && sec.snapshot.url) {
-          secLines += "<br/><i>" + escapeHtml(sec.snapshot.url) + "</i>";
-          if (sec.snapshot.counts) secLines += "<br/>counts: " + escapeHtml(safeStringify(sec.snapshot.counts));
-        }
-        secLines += "</li>";
-      }
-      secLines += "</ul>";
-      children.push({ type: "text", content: secLines });
-    }
-
-    if (rep.playlists && rep.playlists.length) {
-      var failed = [];
-      var okCount = 0;
-      for (var pi = 0; pi < rep.playlists.length; pi++) {
-        if (rep.playlists[pi].status === "ok") okCount++;
-        else failed.push(rep.playlists[pi]);
-      }
-      var summary = "<p><b>Playlists:</b> " + okCount + " ok";
-      if (failed.length) summary += ", <b>" + failed.length + " failed</b>";
-      summary += " (of " + rep.playlists.length + ")</p>";
-      children.push({ type: "text", content: summary });
-
-      if (failed.length) {
-        var fhtml = "<p><b>Failures:</b></p><ul>";
-        for (var fi = 0; fi < failed.length; fi++) {
-          var f = failed[fi];
-          fhtml += "<li><b>" + escapeHtml(f.name || "?") + "</b>";
-          if (f.section) fhtml += " [" + escapeHtml(f.section) + "]";
-          fhtml += " — " + escapeHtml(f.status) +
-            " in " + Math.round((f.durationMs || 0) / 1000) + "s";
-          if (f.error) fhtml += "<br/>error: " + escapeHtml(f.error.substring(0, 200));
-          if (f.snapshot && f.snapshot.url) {
-            fhtml += "<br/>url: <i>" + escapeHtml(f.snapshot.url) + "</i>";
-            if (f.snapshot.counts) fhtml += "<br/>counts: " + escapeHtml(safeStringify(f.snapshot.counts));
-          }
-          fhtml += "</li>";
-        }
-        fhtml += "</ul>";
-        children.push({ type: "text", content: fhtml });
-      }
+    if (rep.pageVisits && rep.pageVisits.length) {
+      children.push({ type: "text", content: "<p><b>Pages visited:</b> " + rep.pageVisits.length + "</p>" });
     }
 
     children.push({ type: "text", content: "<p><i>Detailed logs are written to the app log file (filter by spotify-browse). When Debug logging is on, each sync run is written as a timestamped <code>logs/YYYYMMDD-HHMMSS.log</code> file (newest 20 kept) in the plugin's data folder.</i></p>" });
@@ -1052,6 +925,20 @@ function activate(api) {
     { id: "scrape-shelves", label: "2. Scrape Shelves" },
     { id: "scrape-tracks", label: "3. Scrape Tracks" },
   ];
+
+  // Login signal keys, mirrored by SCRIPT_CHECK_LOGIN (which produces the
+  // signals object). Kept in one place so the JS-side login detection and the
+  // diagnostics formatter never drift. The injected script copy is necessarily
+  // a separate string literal.
+  var POSITIVE_LOGIN_SIGNALS = ["sessionTag", "userWidget", "userBox", "avatar", "accountLink", "libraryBtn", "createPlaylist", "globalNav", "leftSidebar", "nowPlayingBar", "mainNav"];
+  var NEGATIVE_LOGIN_SIGNALS = ["loginBtn", "signupBtn", "signupBar", "loginLink"];
+
+  // True if `signals` has any of `keys` set. Null-safe.
+  function anyLoginSignal(signals, keys) {
+    if (!signals) return false;
+    for (var i = 0; i < keys.length; i++) { if (signals[keys[i]]) return true; }
+    return false;
+  }
 
   function dbgStart() {
     dbgTest.status = "waiting";
@@ -1141,27 +1028,18 @@ function activate(api) {
     });
   }
 
+  // Collect the keys in `keys` that are truthy on `signals`.
+  function presentLoginSignals(signals, keys) {
+    var out = [];
+    for (var i = 0; i < keys.length; i++) { if (signals[keys[i]]) out.push(keys[i]); }
+    return out;
+  }
+
   function dbgFormatLoginResult(data) {
     var details = "";
     if (data && data.signals) {
-      var pos = [];
-      var neg = [];
-      var sigs = data.signals;
-      if (sigs.sessionTag) pos.push("sessionTag");
-      if (sigs.userWidget) pos.push("userWidget");
-      if (sigs.userBox) pos.push("userBox");
-      if (sigs.avatar) pos.push("avatar");
-      if (sigs.accountLink) pos.push("accountLink");
-      if (sigs.libraryBtn) pos.push("libraryBtn");
-      if (sigs.createPlaylist) pos.push("createPlaylist");
-      if (sigs.globalNav) pos.push("globalNav");
-      if (sigs.leftSidebar) pos.push("leftSidebar");
-      if (sigs.nowPlayingBar) pos.push("nowPlayingBar");
-      if (sigs.mainNav) pos.push("mainNav");
-      if (sigs.loginBtn) neg.push("loginBtn");
-      if (sigs.signupBtn) neg.push("signupBtn");
-      if (sigs.signupBar) neg.push("signupBar");
-      if (sigs.loginLink) neg.push("loginLink");
+      var pos = presentLoginSignals(data.signals, POSITIVE_LOGIN_SIGNALS);
+      var neg = presentLoginSignals(data.signals, NEGATIVE_LOGIN_SIGNALS);
       details = "<br/>Positive signals: <b>" + (pos.length > 0 ? pos.join(", ") : "none") + "</b>";
       details += "<br/>Negative signals: <b>" + (neg.length > 0 ? neg.join(", ") : "none") + "</b>";
       if (data.url) details += "<br/>URL: " + escapeHtml(data.url);
@@ -1189,8 +1067,7 @@ function activate(api) {
         if (msg.type === "login-check" && msg.data) {
           lastData = msg.data;
           dbgTest._msgHandler = null;
-          var hasPositive = lastData.signals && (lastData.signals.sessionTag || lastData.signals.userWidget || lastData.signals.userBox || lastData.signals.avatar || lastData.signals.accountLink || lastData.signals.libraryBtn || lastData.signals.createPlaylist || lastData.signals.globalNav || lastData.signals.leftSidebar || lastData.signals.nowPlayingBar || lastData.signals.mainNav);
-          var hasNegative = lastData.signals && (lastData.signals.loginBtn || lastData.signals.signupBtn || lastData.signals.signupBar || lastData.signals.loginLink);
+          var hasNegative = anyLoginSignal(lastData.signals, NEGATIVE_LOGIN_SIGNALS);
 
           if (lastData.loggedIn) {
             if (pollTimer) clearInterval(pollTimer);
@@ -1936,7 +1813,7 @@ function activate(api) {
   // (no tracks — those are fetched lazily). Resolves null if cancelled / not
   // signed in.
   function syncPlaylists(visible, trigger) {
-    beginReport(trigger || "sync", ["(music-chip home)"]);
+    beginReport(trigger || "sync");
     return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible }, function (h, ctx) {
       return new Promise(function (resolve) {
         // Give the SPA a moment to render the home shell before scraping.
@@ -2275,45 +2152,48 @@ function activate(api) {
     return null;
   }
 
+  // Parse a "playlist:<id>" itemId from an action payload into the bare Spotify
+  // id (null if absent or not a playlist item). Shared by the card actions.
+  function parsePlaylistId(data) {
+    if (!data || !data.itemId) return null;
+    var parts = data.itemId.split(":");
+    if (parts[0] !== "playlist") return null;
+    return parts.slice(1).join(":");
+  }
+
   // Open a playlist's detail view by id. Auto-fetches tracks (lazy) if they're
   // not cached/fresh. Returns true if the playlist was found.
   function openPlaylistById(pid) {
-    for (var i = 0; i < state.playlists.length; i++) {
-      if (state.playlists[i].id === pid) {
-        var pl = state.playlists[i];
-        state.currentPlaylist = pl;
-        state.currentView = "playlist";
-        if (!tracksAreFresh(pl)) {
-          state.loadingTracksFor = pl.id;
+    var pl = findPlaylistById(pid);
+    if (!pl) return false;
+    state.currentPlaylist = pl;
+    state.currentView = "playlist";
+    if (!tracksAreFresh(pl)) {
+      state.loadingTracksFor = pl.id;
+      renderPlaylist();
+      ensureTracks(pl).then(function () {
+        if (state.currentPlaylist && state.currentPlaylist.id === pl.id) {
+          state.loadingTracksFor = null;
           renderPlaylist();
-          ensureTracks(pl).then(function () {
-            if (state.currentPlaylist && state.currentPlaylist.id === pl.id) {
-              state.loadingTracksFor = null;
-              renderPlaylist();
-              render();
-            }
-          }).catch(function (e) {
-            console.error("ensureTracks failed:", e);
-            if (state.currentPlaylist && state.currentPlaylist.id === pl.id) {
-              state.loadingTracksFor = null;
-              renderPlaylist();
-            }
-          });
-        } else {
+          render();
+        }
+      }).catch(function (e) {
+        console.error("ensureTracks failed:", e);
+        if (state.currentPlaylist && state.currentPlaylist.id === pl.id) {
           state.loadingTracksFor = null;
           renderPlaylist();
         }
-        return true;
-      }
+      });
+    } else {
+      state.loadingTracksFor = null;
+      renderPlaylist();
     }
-    return false;
+    return true;
   }
 
   api.ui.onAction("view-playlist", function(data) {
-    if (!data || !data.itemId) return;
-    var parts = data.itemId.split(":");
-    if (parts[0] !== "playlist") return;
-    openPlaylistById(parts.slice(1).join(":"));
+    var pid = parsePlaylistId(data);
+    if (pid) openPlaylistById(pid);
   });
 
   api.ui.onAction("play-track", function(data) {
@@ -2390,14 +2270,8 @@ function activate(api) {
   // ---- Context menu actions for playlist cards ----
 
   function findPlaylistFromData(data) {
-    if (!data || !data.itemId) return null;
-    var parts = data.itemId.split(":");
-    if (parts[0] !== "playlist") return null;
-    var pid = parts.slice(1).join(":");
-    for (var i = 0; i < state.playlists.length; i++) {
-      if (state.playlists[i].id === pid) return state.playlists[i];
-    }
-    return null;
+    var pid = parsePlaylistId(data);
+    return pid ? findPlaylistById(pid) : null;
   }
 
   function playlistContextPayload(pl) {
