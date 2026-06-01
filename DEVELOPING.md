@@ -183,6 +183,34 @@ logs folder from the app's settings ("open logs folder") or on disk. Use
 
 ---
 
+## 5b. Verifying scraping locally (no host app)
+
+Scraping runs against the live Spotify DOM, which changes without notice. To
+check whether the scrape logic still works **without** installing into the host
+app, run the harness:
+
+```bash
+npm install                      # first time only (installs Playwright)
+npx playwright install chromium  # first time only (downloads the browser binary)
+npm run verify:scrape
+```
+
+A headed Chromium opens on Spotify. On the **first run** you'll be prompted to
+log in — do it in that window, then press Enter in the terminal. The login is
+saved in `scripts/.spotify-profile/` (gitignored), so later runs are
+non-interactive.
+
+The harness runs the *actual* scrape scripts from `index.js` (sliced live
+between the `SCRAPE-SCRIPTS-START`/`SCRAPE-SCRIPTS-END` markers — don't remove
+those) and prints a verdict: shelves found, cards per shelf, and the track count
+for one sampled playlist. It exits non-zero if scraping is clearly broken (0
+shelves, 0 cards, 0 tracks, or a shape regression), so
+`npm run verify:scrape; echo $?` is a quick health check.
+
+This verifies scraping only — not host-app UI rendering or plugin load.
+
+---
+
 ## 6. Cleaning up (`deactivate`)
 
 Every reload runs `deactivate()` (if present) before re-activating. Most `api`
