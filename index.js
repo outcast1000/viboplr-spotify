@@ -2331,10 +2331,10 @@ function activate(api) {
     if (!tracksAreFresh(pl) && !loadingModalActive) {
       loadingModalActive = true;
       showed = true;
-      api.requestAction("show-loading", { message: "Loading " + pl.name + "…" });
+      api.ui.requestAction("show-loading", { message: "Loading " + pl.name + "…" });
     }
     function done() {
-      if (showed) { loadingModalActive = false; api.requestAction("hide-loading", {}); }
+      if (showed) { loadingModalActive = false; api.ui.requestAction("hide-loading", {}); }
     }
     return ensureTracks(pl).then(function (tracks) {
       done();
