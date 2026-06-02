@@ -2,6 +2,11 @@
 // Opens open.spotify.com in an internal browse window, navigates to configurable
 // sections, and scrapes all playlists and their tracks from the rendered DOM.
 
+// Set by activate() to a function that closes any open browse windows. Called by
+// deactivate() so a plugin reload/disable never strands an audible Spotify
+// window (which would keep playing and stack with the next activation's window).
+var closeOpenWindows = null;
+
 function activate(api) {
   var activeScrapeHandle = null;
   var scrapeGeneration = 0;
@@ -948,6 +953,15 @@ function activate(api) {
     selectedPlaylist: "",
   };
 
+  // Expose window cleanup to deactivate(). Bumping the generation cancels any
+  // in-flight scrape loop so it stops eval-ing into a closing window.
+  closeOpenWindows = function () {
+    scrapeGeneration++;
+    if (activeScrapeHandle) { activeScrapeHandle.close().catch(function () {}); activeScrapeHandle = null; }
+    if (dbgTest.handle) { dbgTest.handle.close().catch(function () {}); dbgTest.handle = null; }
+    windowBusy = false;
+  };
+
   var DBG_STEPS = [
     { id: "login", label: "1. Check Login" },
     { id: "scrape-shelves", label: "2. Scrape Shelves" },
@@ -1046,6 +1060,10 @@ function activate(api) {
       visible: true,
     }).then(function (h) {
       dbgTest.handle = h;
+      h.eval(SCRIPT_MUTE_AUDIO).catch(function () {});
+      if (h.onNavigation) {
+        h.onNavigation(function () { h.eval(SCRIPT_MUTE_AUDIO).catch(function () {}); });
+      }
       h.onMessage(function (msg) {
         if (msg.type === "dbg" && msg.data) {
           var step = dbgTest.steps[dbgTest.steps.length - 1];
@@ -1296,6 +1314,25 @@ function activate(api) {
       'var el=document.getElementById("' + LOGIN_BANNER_ID + '");' +
       'if(el&&el.parentNode)el.parentNode.removeChild(el);' +
       'if(document.body)document.body.style.paddingTop="";' +
+    '})();';
+
+  // Silence the Spotify web player living inside the scrape window. We only ever
+  // read the DOM — audio is never wanted — but Spotify may autoplay/resume a
+  // track, which is audible the moment the (normally hidden) window is shown and
+  // can stack with another orphaned window. Mute every current and future
+  // <audio>/<video> element, and re-mute on any attempt to unmute or play.
+  var SCRIPT_MUTE_AUDIO =
+    '(function(){' +
+      'if(window.__viboplrMuted)return;window.__viboplrMuted=true;' +
+      'function mute(el){try{el.muted=true;el.volume=0;if(!el.paused)el.pause();}catch(e){}}' +
+      'function muteAll(){var m=document.querySelectorAll("audio,video");for(var i=0;i<m.length;i++)mute(m[i]);}' +
+      'muteAll();' +
+      // Re-mute whenever a media element starts playing or gets unmuted.
+      'document.addEventListener("play",function(e){if(e.target&&e.target.muted!==undefined)mute(e.target);},true);' +
+      'document.addEventListener("volumechange",function(e){var t=e.target;if(t&&(t.muted===false||t.volume>0))mute(t);},true);' +
+      // Catch elements added later by the SPA.
+      'try{var mo=new MutationObserver(muteAll);mo.observe(document.documentElement,{childList:true,subtree:true});}catch(e){}' +
+      'setInterval(muteAll,1000);' +
     '})();';
 
   var IMG_HELPER =
@@ -1801,8 +1838,14 @@ function activate(api) {
         handle = h;
         activeScrapeHandle = h;
         recordPageVisit(url, "open");
+        h.eval(SCRIPT_MUTE_AUDIO).catch(function () {});
         if (h.onNavigation) {
-          h.onNavigation(function (u) { recordPageVisit(u, "navigate"); });
+          h.onNavigation(function (u) {
+            recordPageVisit(u, "navigate");
+            // Navigations reload the document and wipe injected scripts, so the
+            // page can autoplay audio again — re-mute after each navigation.
+            h.eval(SCRIPT_MUTE_AUDIO).catch(function () {});
+          });
         }
 
         var loginRetries = 0;
@@ -2752,6 +2795,11 @@ function activate(api) {
   renderSettings();
 }
 
-function deactivate() {}
+function deactivate() {
+  if (typeof closeOpenWindows === "function") {
+    try { closeOpenWindows(); } catch (e) { console.error("spotify-browse deactivate cleanup failed:", e); }
+  }
+  closeOpenWindows = null;
+}
 
 return { activate: activate, deactivate: deactivate };
