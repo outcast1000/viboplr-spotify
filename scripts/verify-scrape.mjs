@@ -47,6 +47,7 @@ const CONFIG_PATH = new URL("./verify-config.json", import.meta.url).pathname;
 const DEFAULTS = {
   showBrowser: true,     // headed window; set false to run headless
   debug: false,          // log the page's _dbg messages to the console
+  includeAlbums: false,  // also scrape /album/ cards (kind:"album")
   maxSteps: 999,         // track-scrape scroll budget for the sampled playlist
   channel: "chrome",     // real Chrome; "" or "chromium" for bundled Chromium
   locale: "en-US",
@@ -91,6 +92,7 @@ function resolveOptions() {
   return {
     showBrowser: pick("showBrowser", envBool("VERIFY_HEADLESS") === undefined ? undefined : !envBool("VERIFY_HEADLESS")),
     debug: pick("debug", envBool("VERIFY_DEBUG")),
+    includeAlbums: pick("includeAlbums", envBool("VERIFY_ALBUMS")),
     maxSteps: pick("maxSteps", envNum("VERIFY_MAX_STEPS")),
     channel: pick("channel", envStr("VERIFY_CHANNEL")),
     locale: pick("locale", envStr("VERIFY_LOCALE")),
@@ -342,7 +344,7 @@ async function main() {
     const errors = [];
 
     // --- Step 2: scrape shelves ---
-    await page.evaluate((s) => eval(s), S.SCRIPT_SCRAPE_SHELVES);
+    await page.evaluate((s) => eval(s), S.scriptScrapeShelves(OPTS.includeAlbums));
     let shelvesData;
     try {
       shelvesData = await bridge.wait("shelves");
@@ -359,11 +361,13 @@ async function main() {
     let sampled = null;
     if (allPlaylists.length > 0) {
       const pl = allPlaylists[0];
-      await page.evaluate((s) => eval(s), S.scriptNavigatePlaylist(pl.id));
+      // Honor the card's kind so an album sample navigates to /album/<id>, not
+      // /playlist/<id> — mirrors ensureTracks in index.js.
+      await page.evaluate((s) => eval(s), S.scriptNavigatePlaylist(pl.id, pl.kind));
       await sleep(SETTLE_MS + 500); // extra margin for the playlist page to settle
       await bridge.ensure();
       // gen arg is irrelevant here (single run); maxSteps from OPTS (999 = full).
-      await page.evaluate((s) => eval(s), S.scriptScrollThenScrape(pl.id, 999, { maxSteps: OPTS.maxSteps }));
+      await page.evaluate((s) => eval(s), S.scriptScrollThenScrape(pl.id, 999, { maxSteps: OPTS.maxSteps, kind: pl.kind }));
       try {
         tracksData = await bridge.wait("tracks");
       } catch (e) {

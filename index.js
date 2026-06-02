@@ -26,6 +26,10 @@ function activate(api) {
     showBrowserOnRefresh: false,
     autoRefreshHours: 24,
     debugLogging: false,
+    // When true, Sync also captures album cards (kind:"album") alongside
+    // playlists. Off by default; applies on the next sync. See the
+    // include-albums design spec.
+    includeAlbums: false,
     lastCheckAt: null,
     lastCheckResult: null,
     refreshSummary: "",
@@ -303,6 +307,26 @@ function activate(api) {
     return out;
   }
 
+  // Host source/URI scheme for an entry, by kind. Albums use spotify://albums/,
+  // everything else (playlists) spotify://playlists/.
+  function entitySource(pl) {
+    return (pl && pl.kind === "album" ? "spotify://albums/" : "spotify://playlists/") + pl.id;
+  }
+
+  // Backfill each track's album from the album entry's own title. Spotify's
+  // album page omits the per-track album column (every track shares the album
+  // shown in the page header), so the row scraper returns album="" for albums.
+  // The album name is page-level metadata we already hold as pl.name. No-op for
+  // playlists (their pages DO have a per-row album column, scraped correctly)
+  // and never overwrites an album the scraper did find. Mutates + returns tracks.
+  function fillAlbumName(pl, tracks) {
+    if (!pl || pl.kind !== "album" || !pl.name || !tracks) return tracks;
+    for (var i = 0; i < tracks.length; i++) {
+      if (tracks[i] && !tracks[i].album) tracks[i].album = pl.name;
+    }
+    return tracks;
+  }
+
   // Persist a single playlist's files. Returns a promise that resolves when
   // meta + tracks are on disk and images are being fetched (images run in
   // the background and the promise settles independently from their success).
@@ -321,6 +345,7 @@ function activate(api) {
       lastSyncedAt: pl.lastSyncedAt || null,
       tracksFetchedAt: pl.tracksFetchedAt || null,
       cardSubtitle: pl.cardSubtitle || "",
+      kind: pl.kind || "playlist",
     }).catch(function (e) { console.error("Failed to write meta:", pl.id, e); });
 
     var tracksP = api.storage.files.writeJson(dir.concat(["tracks.json"]), serializeTracks(tracks))
@@ -554,11 +579,12 @@ function activate(api) {
             description: meta.description || "",
             imageUrl: versionedCover,
             coverVersion: meta.coverVersion || null,
-            uri: "spotify://playlists/" + meta.id,
+            kind: meta.kind || "playlist",
             lastSyncedAt: meta.lastSyncedAt || null,
             tracksFetchedAt: meta.tracksFetchedAt || null,
             cardSubtitle: meta.cardSubtitle || "",
           };
+          playlist.uri = entitySource(playlist);
           return { playlist: playlist, tracks: tracks };
         });
       });
@@ -581,6 +607,7 @@ function activate(api) {
       showBrowserOnRefresh: state.showBrowserOnRefresh,
       autoRefreshHours: state.autoRefreshHours,
       debugLogging: state.debugLogging,
+      includeAlbums: state.includeAlbums,
       lastCheckAt: state.lastCheckAt,
       lastCheckResult: state.lastCheckResult,
     }).catch(console.error);
@@ -697,7 +724,7 @@ function activate(api) {
         subtitle: sub,
         imageUrl: sp.imageUrl,
         action: "view-playlist",
-        targetKind: "playlist",
+        targetKind: sp.kind === "album" ? "album" : "playlist",
         tracks: cardTracks,
         contextMenuActions: menu,
       });
@@ -777,7 +804,7 @@ function activate(api) {
       { id: "sep1", label: "", separator: true },
       { id: "save-playlist", label: "Save to Playlists" },
     ];
-    var headerMeta = tracks.length + " tracks";
+    var headerMeta = (pl.kind === "album" ? "Album · " : "") + tracks.length + " tracks";
     if (pl.lastSyncedAt) headerMeta += " · synced " + formatSyncTime(pl.lastSyncedAt);
     var ch = [
       {
@@ -862,6 +889,7 @@ function activate(api) {
 
     ch.push({ type: "toggle", label: "Show browser window during refresh", checked: state.showBrowserOnRefresh, action: "toggle-show-browser-pref" });
     ch.push({ type: "toggle", label: "Debug logging", checked: state.debugLogging, action: "toggle-debug-logging" });
+    ch.push({ type: "toggle", label: "Include albums in sync", checked: state.includeAlbums, action: "toggle-include-albums" });
 
     ch.push(buildDebugTestSection());
     ch.push(buildDiagnosticsSection());
@@ -971,7 +999,7 @@ function activate(api) {
       renderSettings();
       dbgTest.handle.eval('window.location.href=' + JSON.stringify(MUSIC_CHIP_URL)).catch(console.error);
       setTimeout(function () {
-        dbgEvalAndWait(SCRIPT_SCRAPE_SHELVES, "shelves", 30000, function (data) {
+        dbgEvalAndWait(scriptScrapeShelves(state.includeAlbums), "shelves", 30000, function (data) {
           var shelves = (data && data.shelves) || [];
           var pls = [];
           for (var s = 0; s < shelves.length; s++) {
@@ -1349,9 +1377,23 @@ function activate(api) {
   // ACCUMULATING (Spotify virtualizes the feed, so cards unmount off-screen). A
   // heading (h1/h2/h3 or role=heading, not inside a card) starts a new shelf; the
   // playlist cards that follow it — until the next heading — belong to that shelf.
-  // Dedupe playlist ids across the whole run (first wins). Sends a "shelves" msg:
-  //   { shelves: [{ section, description, playlists: [{id,name,subtitle,imageUrl}] }], total }
-  var SCRIPT_SCRAPE_SHELVES = '(function(){try{' +
+  // Dedupe ids across the whole run (first wins). Sends a "shelves" msg:
+  //   { shelves: [{ section, description, playlists: [{id,name,subtitle,imageUrl,kind}] }], total }
+  // Build the home-shelf scraper. When includeAlbums is true, the generated
+  // script also captures /album/ cards (kind:"album"); otherwise only
+  // /playlist/ cards (kind:"playlist"). The playlists-only build uses the same
+  // selectors/regex as the original scraper (records additionally carry a
+  // kind:"playlist" field, consumed by the kind data model).
+  function scriptScrapeShelves(includeAlbums) {
+    // Selector + regex fragments widen to album links only when requested.
+    var linkSel = includeAlbums
+      ? 'a[href*=\\"/playlist/\\"],a[href*=\\"/album/\\"]'
+      : 'a[href*=\\"/playlist/\\"]';
+    // idRe is a normal string in index.js (NOT nested inside the page-script
+    // literal), so single-escape the backslashes: the VALUE must be the regex
+    // literal /\/(playlist|album)\/([a-zA-Z0-9]+)/.
+    var idRe = includeAlbums ? '/\\/(playlist|album)\\/([a-zA-Z0-9]+)/' : '/\\/(playlist)\\/([a-zA-Z0-9]+)/';
+    return '(function(){try{' +
     DBG_HELPER +
     IMG_HELPER +
     'function findImgContainer(el){var node=el;for(var up=0;up<6&&node;up++){var img=bestImg(node);if(img)return img;node=node.parentElement;}return null;}' +
@@ -1413,20 +1455,21 @@ function activate(api) {
     'var shelfByName={};var shelfOrder=[];var byId={};var total=0;' +
     'function sweep(){' +
       'var main=document.querySelector("main")||document.body;' +
-      'var nodes=main.querySelectorAll("h1,h2,h3,[role=\\"heading\\"],a[href*=\\"/playlist/\\"]");' +
+      'var nodes=main.querySelectorAll("h1,h2,h3,[role=\\"heading\\"],' + linkSel + '");' +
       'var cur=null;' +
       'for(var i=0;i<nodes.length;i++){' +
         'var el=nodes[i];' +
         'if(isHeading(el)){' +
-          'if(el.closest("a[href*=\\"/playlist/\\"]"))continue;' +
+          'if(el.closest("' + linkSel + '"))continue;' +
           'var ht=(el.textContent||"").trim();' +
           'if(!ht)continue;' +
           'if(!shelfByName[ht]){shelfByName[ht]={section:ht,description:descFromHeading(el,ht),playlists:[]};shelfOrder.push(ht);}' +
           'cur=shelfByName[ht];' +
           'continue;' +
         '}' +
-        'var m=(el.getAttribute("href")||"").match(/\\/playlist\\/([a-zA-Z0-9]+)/);' +
+        'var m=(el.getAttribute("href")||"").match(' + idRe + ');' +
         'if(!m)continue;' +
+        'var _kind=m[1]==="album"?"album":"playlist";var _id=m[2];' +
         // Skip seed/credit links embedded in a card SUBTITLE ("With Franz
         // Ferdinand, Wunderhorse and more" on a mix card). These are decorative
         // /playlist/ links living inside ANOTHER card\'s subtitle
@@ -1439,7 +1482,8 @@ function activate(api) {
         'var nm=(el.textContent||"").trim();' +
         'var img=findImgContainer(el);' +
         'var sub=cardSubtitle(el,nm);' +
-        'var existing=byId[m[1]];' +
+        'var _key=_kind+":"+_id;' +
+        'var existing=byId[_key];' +
         'if(existing){' +
           // Backfill fields that lazy-loaded after the first sighting.
           'if(!existing.imageUrl&&img)existing.imageUrl=img;' +
@@ -1449,8 +1493,8 @@ function activate(api) {
         '}' +
         'if(!nm)continue;' +
         'if(!cur){if(!shelfByName["Playlists"]){shelfByName["Playlists"]={section:"Playlists",description:"",playlists:[]};shelfOrder.push("Playlists");}cur=shelfByName["Playlists"];}' +
-        'var rec={id:m[1],name:nm,subtitle:sub,imageUrl:img};' +
-        'byId[m[1]]=rec;cur.playlists.push(rec);total++;' +
+        'var rec={id:_id,name:nm,subtitle:sub,imageUrl:img,kind:_kind};' +
+        'byId[_key]=rec;cur.playlists.push(rec);total++;' +
       '}' +
     '}' +
     'function countNoCover(){var n=0;for(var k in byId){if(byId.hasOwnProperty(k)&&!byId[k].imageUrl)n++;}return n;}' +
@@ -1476,7 +1520,7 @@ function activate(api) {
     // shelves that scroll out of vertical view (and remounts them at scrollLeft 0).
     'function carousels(){' +
       'var mainEl=document.querySelector("main")||document.body;' +
-      'var links=mainEl.querySelectorAll("a[href*=\\"/playlist/\\"]");' +
+      'var links=mainEl.querySelectorAll("' + linkSel + '");' +
       'var out=[];' +
       'for(var i=0;i<links.length;i++){' +
         'var node=links[i];' +
@@ -1542,22 +1586,25 @@ function activate(api) {
     '}catch(e){_fail(e)}}' +
     'descend();' +
     '}catch(e){window.__viboplr.send("error",{message:"scrape shelves: "+e})}})()';
+  }
 
-  function scriptNavigatePlaylist(id) {
+  function scriptNavigatePlaylist(id, kind) {
+    var path = kind === "album" ? "/album/" : "/playlist/";
     return '(function(){' +
       DBG_HELPER +
-      '_dbg("tracks","navigating to /playlist/' + id + '");' +
-      'window.location.href="/playlist/' + id + '"' +
+      '_dbg("tracks","navigating to ' + path + id + '");' +
+      'window.location.href="' + path + id + '"' +
     '})()';
   }
 
   function scriptScrollThenScrape(playlistId, gen, opts) {
     var maxSteps = (opts && opts.maxSteps) || 60;
+    var entityPath = (opts && opts.kind === "album") ? "/album/" : "/playlist/";
     return '(function(){try{' +
       DBG_HELPER +
       IMG_HELPER +
       'var _gen=' + gen + ';' +
-      '_dbg("tracks","=== START scrape for ' + playlistId + '",{url:location.href,gen:_gen});' +
+      '_dbg("tracks","=== START scrape for ' + entityPath + playlistId + '",{url:location.href,gen:_gen});' +
       // Find the scroll container, retrying if the page hasn't rendered yet
       'var sc=null;var _waitAttempts=0;var _maxWait=16;' +
       'function findScrollContainer(){' +
@@ -1860,7 +1907,7 @@ function activate(api) {
                 var raw = sec.playlists[pi];
                 if (seen[raw.id]) continue;
                 seen[raw.id] = true;
-                playlists.push({
+                var np = {
                   id: raw.id,
                   name: raw.name,
                   section: name,
@@ -1868,10 +1915,12 @@ function activate(api) {
                   cardSubtitle: raw.subtitle || "",
                   imageUrl: raw.imageUrl || null,
                   coverVersion: null,
-                  uri: "spotify://playlists/" + raw.id,
+                  kind: raw.kind === "album" ? "album" : "playlist",
                   lastSyncedAt: new Date().toISOString(),
                   tracksFetchedAt: null,
-                });
+                };
+                np.uri = entitySource(np);
+                playlists.push(np);
               }
             }
             dbg("flow", "music-chip scrape: " + playlists.length + " playlists across " + sections.length + " shelves");
@@ -1886,7 +1935,7 @@ function activate(api) {
           h.eval('window.location.href=' + JSON.stringify(MUSIC_CHIP_URL));
           setTimeout(function () {
             if (ctx.isStale()) { finishScrape([], [], {}); return; }
-            h.eval(SCRIPT_SCRAPE_SHELVES);
+            h.eval(scriptScrapeShelves(state.includeAlbums));
           }, 4000);
         }, 1000);
       });
@@ -1939,6 +1988,9 @@ function activate(api) {
             pl.tracksFetchedAt = new Date().toISOString();
             pl.lastSyncedAt = pl.tracksFetchedAt;
           }
+          // Album pages omit the per-row album column; backfill it from the
+          // album's own title before persisting (no-op for playlists).
+          fillAlbumName(pl, finalTracks);
           state.playlistTracks[pl.id] = finalTracks;
           savePlaylist(pl).then(function () { cacheAllImages(); }).catch(console.error);
           resolve(finalTracks);
@@ -1956,10 +2008,10 @@ function activate(api) {
           if (trackTimeout) { clearTimeout(trackTimeout); trackTimeout = null; }
           if (attempts < 2) {
             attempts++;
-            h.eval(scriptNavigatePlaylist(pl.id));
+            h.eval(scriptNavigatePlaylist(pl.id, pl.kind));
             setTimeout(function () {
               if (ctx.isStale()) { settle(oldTracks); return; }
-              h.eval(scriptScrollThenScrape(pl.id, gen, { maxSteps: maxSteps }));
+              h.eval(scriptScrollThenScrape(pl.id, gen, { maxSteps: maxSteps, kind: pl.kind }));
               arm();
             }, 4000);
             return;
@@ -1979,7 +2031,7 @@ function activate(api) {
             if (settled) return;
             if (msg.data.gen !== gen) return;
             if (!Array.isArray(msg.data.tracks)) return;
-            state.playlistTracks[pl.id] = msg.data.tracks;
+            state.playlistTracks[pl.id] = fillAlbumName(pl, msg.data.tracks);
             if (state.currentPlaylist && state.currentPlaylist.id === pl.id) renderPlaylist();
             return;
           }
@@ -1992,10 +2044,10 @@ function activate(api) {
         });
 
         attempts = 1;
-        h.eval(scriptNavigatePlaylist(pl.id));
+        h.eval(scriptNavigatePlaylist(pl.id, pl.kind));
         setTimeout(function () {
           if (ctx.isStale()) { settle(oldTracks); return; }
-          h.eval(scriptScrollThenScrape(pl.id, gen, { maxSteps: maxSteps }));
+          h.eval(scriptScrollThenScrape(pl.id, gen, { maxSteps: maxSteps, kind: pl.kind }));
           arm();
         }, 4000);
       });
@@ -2031,6 +2083,7 @@ function activate(api) {
       var old = oldById[np.id];
       if (old) {
         np.tracksFetchedAt = old.tracksFetchedAt || null;
+        if (!np.kind && old.kind) np.kind = old.kind;
         if (!np.imageUrl && old.imageUrl) np.imageUrl = old.imageUrl;
         if (!np.cardSubtitle && old.cardSubtitle) np.cardSubtitle = old.cardSubtitle;
       }
@@ -2289,7 +2342,7 @@ function activate(api) {
       name: pl.name,
       playlistName: title,
       coverUrl: pl.imageUrl || undefined,
-      source: "spotify://playlists/" + pl.id,
+      source: entitySource(pl),
       description: pl.description || null,
       metadata: meta,
     };
@@ -2373,7 +2426,7 @@ function activate(api) {
 
     api.playlists.save({
       name: name,
-      source: "spotify://playlists/" + pl.id,
+      source: entitySource(pl),
       imageUrl: pl.imageUrl || null,
       description: pl.description || null,
       metadata: plMeta,
@@ -2416,6 +2469,12 @@ function activate(api) {
 
   api.ui.onAction("toggle-debug-logging", function() {
     state.debugLogging = !state.debugLogging;
+    savePreferences();
+    renderSettings();
+  });
+
+  api.ui.onAction("toggle-include-albums", function() {
+    state.includeAlbums = !state.includeAlbums;
     savePreferences();
     renderSettings();
   });
@@ -2494,6 +2553,7 @@ function activate(api) {
             // Home-shelf card subtitle = playlist description (blank until the
             // playlist's tracks have been scraped). Replaces the old "N tracks".
             subtitle: pl.description || undefined,
+            targetKind: pl.kind === "album" ? "album" : "playlist",
             tracks: toPluginTracks(rawTracks),
           };
         });
@@ -2629,6 +2689,7 @@ function activate(api) {
       state.showBrowserOnRefresh = !!prefs.showBrowserOnRefresh;
       if (prefs.autoRefreshHours !== undefined) state.autoRefreshHours = prefs.autoRefreshHours;
       if (prefs.debugLogging !== undefined) state.debugLogging = !!prefs.debugLogging;
+      if (prefs.includeAlbums !== undefined) state.includeAlbums = !!prefs.includeAlbums;
       if (prefs.lastCheckAt) state.lastCheckAt = prefs.lastCheckAt;
       if (prefs.lastCheckResult) state.lastCheckResult = prefs.lastCheckResult;
       registerAutoRefresh();

@@ -28,7 +28,7 @@ export function extractScripts(indexPath) {
 
   const out = {
     SCRIPT_CHECK_LOGIN: sandbox.SCRIPT_CHECK_LOGIN,
-    SCRIPT_SCRAPE_SHELVES: sandbox.SCRIPT_SCRAPE_SHELVES,
+    scriptScrapeShelves: sandbox.scriptScrapeShelves,
     scriptNavigatePlaylist: sandbox.scriptNavigatePlaylist,
     scriptScrollThenScrape: sandbox.scriptScrollThenScrape,
     MUSIC_CHIP_URL: sandbox.MUSIC_CHIP_URL,

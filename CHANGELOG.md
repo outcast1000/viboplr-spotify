@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.12.6
+- New setting **"Include albums in sync"** (off by default). When enabled, Sync
+  also captures album cards from the Music home alongside playlists; albums open
+  a detail view with their tracklist and support Play / Enqueue / Save to
+  Playlists, exactly like playlists. Disable it and re-sync to remove albums.
+
 ## v1.12.5
 - Internal cleanup, no behavior change to syncing or scraping:
   - Removed the never-populated per-section/per-playlist diagnostics machinery
