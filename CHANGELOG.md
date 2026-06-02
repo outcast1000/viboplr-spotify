@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.12.7
+- Fix: clicking **Play** on an unfetched playlist now shows the "Loading…"
+  modal while its tracks scrape, instead of appearing to do nothing until the
+  queue silently filled seconds later. The loading modal called
+  `api.requestAction` (which is undefined) instead of `api.ui.requestAction`,
+  so it threw before the scrape and left the modal-guard stuck — suppressing
+  feedback on every subsequent Play.
+
 ## v1.12.6
 - New setting **"Include albums in sync"** (off by default). When enabled, Sync
   also captures album cards from the Music home alongside playlists; albums open
