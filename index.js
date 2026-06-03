@@ -21,8 +21,12 @@ function activate(api) {
 
   var state = {
     currentView: "home",
-    // idle | waiting-login | done | error
+    // idle | waiting-login | running | done | error
     status: "idle",
+    // Human-readable progress line shown in the toolbar while a sync runs
+    // (e.g. "Reading your Spotify home…", "Getting tracks: Discover Weekly (3/12)").
+    // Cleared when the sync settles. Set via setSyncStage().
+    syncStage: "",
     playlists: [],
     playlistTracks: {},   // playlistId -> [{ name, artist, album, duration, imageUrl, spotifyId }]
     currentPlaylist: null,
@@ -636,7 +640,15 @@ function activate(api) {
   }
 
   function isActiveStatus() {
-    return state.status === "waiting-login";
+    return state.status === "waiting-login" || state.status === "running";
+  }
+
+  // Update the live progress line shown in the toolbar during a sync and
+  // re-render. Pass "" to clear. Safe to call from any scrape phase.
+  function setSyncStage(text) {
+    state.syncStage = text || "";
+    if (text) plog("info", "stage", text);
+    render();
   }
 
   function buildToolbar() {
@@ -654,7 +666,13 @@ function activate(api) {
     var statusVariant = "default";
 
     if (isActive) {
-      statusText = "Waiting for login…";
+      // Prefer the live per-stage progress line; fall back to the login wait
+      // (the stage is empty until the first scrape phase reports in).
+      if (state.status === "waiting-login") {
+        statusText = state.syncStage || "Waiting for login…";
+      } else {
+        statusText = state.syncStage || "Syncing…";
+      }
     } else if (state.status === "error") {
       statusText = state.errorMessage;
       statusVariant = "error";
@@ -1316,23 +1334,44 @@ function activate(api) {
       'if(document.body)document.body.style.paddingTop="";' +
     '})();';
 
-  // Silence the Spotify web player living inside the scrape window. We only ever
-  // read the DOM — audio is never wanted — but Spotify may autoplay/resume a
-  // track, which is audible the moment the (normally hidden) window is shown and
-  // can stack with another orphaned window. Mute every current and future
-  // <audio>/<video> element, and re-mute on any attempt to unmute or play.
+  // Stop the Spotify web player from auto-playing inside the scrape window.
+  //
+  // We only ever read the DOM — audio is never wanted. The scrape scripts never
+  // click a track or call play(); the sound comes from Spotify's own "resume your
+  // last session" attempt. In a normal browser that attempt is REJECTED because
+  // there was no user gesture (autoplay policy) — which is why open.spotify.com
+  // is silent when you open it by hand. The embedded webview ships with that gate
+  // disabled (wry sets mediaTypesRequiringUserActionForPlayback=None), so the
+  // page's play() succeeds and audio leaks.
+  //
+  // FIX = prevention, not muting: re-impose the browser autoplay policy. play()
+  // without a real user gesture rejects with NotAllowedError (exactly as WebKit
+  // would), and Web Audio contexts stay suspended until a gesture. Spotify is
+  // built to handle a rejected play() — it stays paused — so nothing plays and
+  // nothing breaks. A genuine click (e.g. during manual login in a visible
+  // window) flips the gate so real interaction still works.
+  //
+  // NOTE: the host app installs this same gate at document-start in every frame
+  // (initialization_script_for_all_frames in browse_window.rs) — the primary
+  // defense, since it runs before any page JS on every load. This eval-injected
+  // copy is the in-page backup for hosts that predate that change.
   var SCRIPT_MUTE_AUDIO =
     '(function(){' +
-      'if(window.__viboplrMuted)return;window.__viboplrMuted=true;' +
-      'function mute(el){try{el.muted=true;el.volume=0;if(!el.paused)el.pause();}catch(e){}}' +
-      'function muteAll(){var m=document.querySelectorAll("audio,video");for(var i=0;i<m.length;i++)mute(m[i]);}' +
-      'muteAll();' +
-      // Re-mute whenever a media element starts playing or gets unmuted.
-      'document.addEventListener("play",function(e){if(e.target&&e.target.muted!==undefined)mute(e.target);},true);' +
-      'document.addEventListener("volumechange",function(e){var t=e.target;if(t&&(t.muted===false||t.volume>0))mute(t);},true);' +
-      // Catch elements added later by the SPA.
-      'try{var mo=new MutationObserver(muteAll);mo.observe(document.documentElement,{childList:true,subtree:true});}catch(e){}' +
-      'setInterval(muteAll,1000);' +
+      'var gestured=false;' +
+      '["pointerdown","mousedown","touchstart","keydown"].forEach(function(t){' +
+        'document.addEventListener(t,function(){gestured=true;},true);});' +
+      'try{var proto=HTMLMediaElement.prototype;var nativePlay=proto.play;' +
+        'proto.play=function(){if(!gestured){try{this.pause();}catch(e){}' +
+          'return Promise.reject(new DOMException("play() blocked: no user activation (viboplr)","NotAllowedError"));}' +
+          'return nativePlay.apply(this,arguments);};' +
+        'document.addEventListener("play",function(e){if(!gestured&&e.target&&e.target.pause){try{e.target.pause();}catch(err){}}},true);' +
+      '}catch(e){}' +
+      'try{if(!window.__viboplrACGated){var AC=window.AudioContext||window.webkitAudioContext;if(AC){' +
+        'var nativeResume=AC.prototype.resume;' +
+        'AC.prototype.resume=function(){if(!gestured)return Promise.resolve();return nativeResume.apply(this,arguments);};' +
+        'var W=function(){var c=new(Function.prototype.bind.apply(AC,[null].concat([].slice.call(arguments))))();' +
+          'if(!gestured){try{c.suspend();}catch(e){}}return c;};' +
+        'W.prototype=AC.prototype;window.AudioContext=W;window.webkitAudioContext=W;window.__viboplrACGated=true;}}}catch(e){}' +
     '})();';
 
   var IMG_HELPER =
@@ -1390,6 +1429,11 @@ function activate(api) {
     'var pos=signals.sessionTag||signals.userWidget||signals.userBox||signals.avatar||signals.accountLink||signals.libraryBtn||signals.createPlaylist||signals.globalNav||signals.leftSidebar||signals.nowPlayingBar||signals.mainNav;' +
     'var neg=signals.loginBtn||signals.signupBtn||signals.signupBar||signals.loginLink;' +
     'var ok=pos&&!neg;' +
+    // loggedOut is an AFFIRMATIVE signed-out signal (login/signup UI present).
+    // Distinct from "ok===false", which is also true while the page is still
+    // loading (no signals yet). The host only surfaces the window on a real
+    // loggedOut to avoid flashing it during a slow load for a logged-in user.
+    'var loggedOut=!!neg;' +
     'var pageDump=null;' +
     'if(!pos&&!neg){' +
       'var btns=qsa("button");' +
@@ -1402,7 +1446,7 @@ function activate(api) {
       'console.log("[viboplr-login] NO CLEAR SIGNAL page dump:",JSON.stringify(pageDump));' +
     '}' +
     'console.log("[viboplr-login] result: loggedIn="+ok+" pos="+pos+" neg="+neg);' +
-    'window.__viboplr.send("login-check",{loggedIn:ok,signals:signals,url:location.href,pageDump:pageDump});' +
+    'window.__viboplr.send("login-check",{loggedIn:ok,loggedOut:loggedOut,signals:signals,url:location.href,pageDump:pageDump});' +
     '}catch(e){' +
       'console.error("[viboplr-login] CAUGHT ERROR:",e,""+e,e.stack);' +
       'try{window.__viboplr.send("login-check",{loggedIn:false,error:""+e})}catch(e2){console.error("[viboplr-login] send also failed:",e2)}' +
@@ -1507,6 +1551,16 @@ function activate(api) {
         'var m=(el.getAttribute("href")||"").match(' + idRe + ');' +
         'if(!m)continue;' +
         'var _kind=m[1]==="album"?"album":"playlist";var _id=m[2];' +
+        // Skip "BigCard" hero tiles — the large promo carousel at the very top of
+        // the music-chip page (editorial spotlights, often a looping <video>).
+        // Every real library/recommendation card lives inside a <section> that
+        // carries an aria-label (the shelf\'s accessible name); the hero tiles do
+        // NOT sit in an aria-labelled section. So require an aria-labelled
+        // <section> ancestor — that admits genuine cards and drops the hero
+        // BigCards regardless of their (frequently-changing) wrapper classes.
+        // (Verified against the live music-chip DOM.)
+        'var _sec=el.closest("section");' +
+        'if(!_sec||!(_sec.getAttribute("aria-label")||"").trim())continue;' +
         // Skip seed/credit links embedded in a card SUBTITLE ("With Franz
         // Ferdinand, Wunderhorse and more" on a mix card). These are decorative
         // /playlist/ links living inside ANOTHER card\'s subtitle
@@ -1824,6 +1878,11 @@ function activate(api) {
         gen: gen,
         setHandler: function (h) { currentHandler = h; },
         isStale: function () { return gen !== scrapeGeneration; },
+        // URL the page reported at the last login check. Lets the scrape step
+        // skip a redundant re-navigation when we're already on the right page
+        // (the window opened directly at the music-chip URL; we only need to
+        // reload if login bounced us elsewhere).
+        loginUrl: null,
       };
 
       api.network.openBrowseWindow(url, {
@@ -1851,9 +1910,18 @@ function activate(api) {
         var loginRetries = 0;
         var LOGIN_GRACE_POLLS = 2;
         var loginPromptShown = false;
+        // Tracks the most recent AFFIRMATIVE signed-out signal from the page.
+        // We only surface the window once we've actually seen the login/signup
+        // UI — never merely because login isn't confirmed yet (which is also the
+        // case during a slow page load, and caused the window to flash for an
+        // already-logged-in user).
+        var sawLoggedOut = false;
 
         function promptForLogin() {
           if (loginPromptShown) return;
+          // Don't show the window until the page positively reports a logged-out
+          // state. Until then a missing "loggedIn" just means "still loading".
+          if (!sawLoggedOut) return;
           loginPromptShown = true;
           plog("warn", "login", "Not logged in to Spotify — surfacing window for sign-in");
           h.eval(SCRIPT_LOGIN_BANNER);
@@ -1867,12 +1935,22 @@ function activate(api) {
             plog(msg.data.level || "info", "browser:" + (msg.data.tag || "?"), msg.data.msg || "", msg.data.data);
             return;
           }
+          // Remember an affirmative logged-out reading and, once seen, surface the
+          // window straight away (no need to wait for another grace poll).
+          if (msg.type === "login-check" && msg.data && msg.data.loggedOut && !msg.data.loggedIn) {
+            sawLoggedOut = true;
+            if (loginRetries > LOGIN_GRACE_POLLS) promptForLogin();
+          }
           if (msg.type === "login-check" && msg.data && msg.data.loggedIn && loginTimer) {
             clearInterval(loginTimer); loginTimer = null;
+            ctx.loginUrl = msg.data.url || null;
             if (loginPromptShown) {
               h.eval(SCRIPT_REMOVE_LOGIN_BANNER);
               if (!visible) h.hide().catch(function (e) { console.error("Failed to re-hide Spotify window:", e); });
             }
+            // Login confirmed — leave the "waiting-login" state so the toolbar
+            // switches from the login prompt to live scrape-stage messages.
+            if (state.status === "waiting-login") state.status = "running";
             // Hand control to fn. Route subsequent messages to its handler.
             Promise.resolve()
               .then(function () { return fn(h, ctx); })
@@ -1967,19 +2045,38 @@ function activate(api) {
               }
             }
             dbg("flow", "music-chip scrape: " + playlists.length + " playlists across " + sections.length + " shelves");
+            setSyncStage("Found " + playlists.length + " playlist" +
+              (playlists.length === 1 ? "" : "s") + " across " + sections.length + " shelf" +
+              (sections.length === 1 ? "" : "ves"));
             finishScrape(playlists, sections, sectionDescriptions);
           }
         });
 
-        // Navigate to the music-chip page (the window opened there already, but
-        // re-assert in case login redirected away), then scrape after render.
+        // The window already opened directly at the music-chip URL. Only reload
+        // if login bounced us elsewhere (e.g. to the account/welcome page) —
+        // otherwise scrape the page that's already loaded. Skipping the
+        // redundant reload avoids a full second page load (and its reload-time
+        // autoplay attempt) on the common already-on-home path.
         setTimeout(function () {
           if (ctx.isStale()) { finishScrape([], [], {}); return; }
-          h.eval('window.location.href=' + JSON.stringify(MUSIC_CHIP_URL));
-          setTimeout(function () {
-            if (ctx.isStale()) { finishScrape([], [], {}); return; }
-            h.eval(scriptScrapeShelves(state.includeAlbums));
-          }, 4000);
+          setSyncStage("Reading your Spotify home…");
+          var onMusicChip = ctx.loginUrl &&
+            ctx.loginUrl.indexOf("/home") !== -1 &&
+            ctx.loginUrl.indexOf("facet=music-chip") !== -1;
+          if (onMusicChip) {
+            // Already where we need to be — scrape after a short settle.
+            setTimeout(function () {
+              if (ctx.isStale()) { finishScrape([], [], {}); return; }
+              h.eval(scriptScrapeShelves(state.includeAlbums));
+            }, 1000);
+          } else {
+            // Drifted off (or unknown URL) — re-assert then give it time to render.
+            h.eval('window.location.href=' + JSON.stringify(MUSIC_CHIP_URL));
+            setTimeout(function () {
+              if (ctx.isStale()) { finishScrape([], [], {}); return; }
+              h.eval(scriptScrapeShelves(state.includeAlbums));
+            }, 4000);
+          }
         }, 1000);
       });
     }).then(function (res) {
@@ -2193,6 +2290,7 @@ function activate(api) {
     syncPlaylists(state.showBrowserOnRefresh, "sync").then(function(result) {
       state.refreshing = false;
       if (!result) {
+        state.syncStage = "";
         state.status = "error";
         state.errorMessage = "Spotify sign-in was not completed. Click 'Sync' to try again.";
         render();
@@ -2203,15 +2301,18 @@ function activate(api) {
         state.refreshSummary = "Synced " + result.playlists.length + " playlist" +
           (result.playlists.length === 1 ? "" : "s") + " across " + result.sections.length + " shelves";
         recordCheckResult(result.playlists.length, 0);
+        setSyncStage("Caching images…");
         cacheAllImages();
       } else {
         state.refreshSummary = "Sync found no playlists — kept existing library";
         recordCheckResult(state.playlists.length, 1);
       }
+      state.syncStage = "";
       state.status = "done";
       render();
     }).catch(function(err) {
       state.refreshing = false;
+      state.syncStage = "";
       state.status = "error";
       state.errorMessage = "Sync failed: " + (err.message || err);
       recordCheckResult(0, 1);
@@ -2227,6 +2328,7 @@ function activate(api) {
     }
     windowBusy = false;
     state.status = "idle";
+    state.syncStage = "";
     state.refreshing = false;
     render();
   });
