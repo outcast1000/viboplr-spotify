@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.12.8
+- Fix: the Music-home sync no longer adds phantom/duplicate-looking entries
+  from the big "hero" promo tiles at the top of the page. The scrape now keeps
+  only playlist cards that live inside an aria-labelled `<section>` (every real
+  library/recommendation shelf), so the editorial hero tiles — and stray
+  mix-card titles that were being mistaken for shelf headings — are dropped. A
+  hero playlist that also appears as a genuine card in a real shelf is still
+  captured there.
+- Prevent audio leaking from the hidden scrape window: instead of muting after
+  the fact, the embedded browser now re-imposes the browser autoplay policy, so
+  Spotify's "resume last session" `play()` is rejected (no user gesture) and
+  nothing ever sounds — while a real click during manual login still works.
+- Sync now shows a live progress line in the toolbar ("Reading your Spotify
+  home…", "Found N playlists across M shelves", "Caching images…") instead of a
+  static "Waiting for login…".
+- Faster sync on the common path: when the scrape window already opened on the
+  Music-home page, skip the redundant re-navigation (and its reload-time
+  autoplay attempt) and scrape the page that's already loaded.
+- The hidden scrape window no longer briefly flashes for already-logged-in
+  users — it is surfaced only when the page positively reports a signed-out
+  state.
+
 ## v1.12.7
 - Fix: clicking **Play** on an unfetched playlist now shows the "Loading…"
   modal while its tracks scrape, instead of appearing to do nothing until the
