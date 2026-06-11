@@ -709,18 +709,21 @@ function activate(api) {
     for (var pi = 0; pi < playlists.length; pi++) {
       var sp = playlists[pi];
       var ts = state.playlistTracks[sp.id];
-      // Before tracks are fetched, show the scraped home-card subtitle (e.g.
-      // "With X, Y…"). After a fetch, show the track count + synced stamp.
+      // Always prefer the scraped home-card subtitle (e.g. "With X, Y…") when we
+      // have one — keep it visible even after tracks load. Only fall back to the
+      // track count + synced stamp when there's no scraped subtitle to show.
       // Do NOT fall back to pl.description — that's the long playlist-page
       // description (only non-empty for algorithmic Made-for-You playlists, and
       // carried over from the old plugin's meta.json), which is the wrong text
       // for a card subtitle and caused stale "old plugin" descriptions to show.
       var sub;
-      if (ts && ts.length > 0) {
+      if (sp.cardSubtitle) {
+        sub = sp.cardSubtitle;
+      } else if (ts && ts.length > 0) {
         sub = ts.length + " tracks";
         if (sp.lastSyncedAt) sub += " · synced " + formatSyncTime(sp.lastSyncedAt);
       } else {
-        sub = sp.cardSubtitle || "";
+        sub = "";
       }
       var cardTracks = [];
       if (ts) {

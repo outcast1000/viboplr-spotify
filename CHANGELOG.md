@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.12.9
+- Playlist cards now keep the scraped subtitle (e.g. "With X, Y…") visible even
+  after their tracks are fetched, instead of replacing it with the track count.
+  The "N tracks · synced …" text is now only used as a fallback when a card has
+  no scraped subtitle.
+
 ## v1.12.8
 - Fix: the Music-home sync no longer adds phantom/duplicate-looking entries
   from the big "hero" promo tiles at the top of the page. The scrape now keeps
