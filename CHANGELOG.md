@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.13.0
 - On first activation of a fresh install, the plugin now starts the initial
   sync automatically and asks the user to sign in to Spotify in the embedded
   browser window if needed — no manual Sync click required. One-shot
