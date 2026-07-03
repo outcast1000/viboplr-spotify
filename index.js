@@ -2282,20 +2282,30 @@ function activate(api) {
 
   // ---- Actions ----
 
-  api.ui.onAction("sync", function() {
+  // Shared sync entry point: used by the toolbar Sync button and the one-shot
+  // first-activation flow (trigger "first-run"). Opening the browse window
+  // asks the user to sign in to Spotify (surfaced window + banner) if they
+  // aren't already logged in.
+  function startSync(trigger) {
     state.status = "waiting-login";
     state.errorMessage = "";
     state.refreshSummary = "";
     state.refreshing = true;
-    dbg("flow", "starting single-page sync");
+    dbg("flow", "starting single-page sync", { trigger: trigger });
     render();
 
-    syncPlaylists(state.showBrowserOnRefresh, "sync").then(function(result) {
+    syncPlaylists(state.showBrowserOnRefresh, trigger).then(function(result) {
       state.refreshing = false;
       if (!result) {
         state.syncStage = "";
         state.status = "error";
         state.errorMessage = "Spotify sign-in was not completed. Click 'Sync' to try again.";
+        // On first-run the user likely isn't looking at the Spotify view (and
+        // the one-shot flag means we never re-prompt), so surface the dead-end
+        // as a toast instead of only in the view's toolbar.
+        if (trigger === "first-run") {
+          api.ui.showNotification("Spotify sign-in was not completed — open the Spotify view and click Sync when you're ready.");
+        }
         render();
         return;
       }
@@ -2304,6 +2314,12 @@ function activate(api) {
         state.refreshSummary = "Synced " + result.playlists.length + " playlist" +
           (result.playlists.length === 1 ? "" : "s") + " across " + result.sections.length + " shelves";
         recordCheckResult(result.playlists.length, 0);
+        // Close the first-run loop: after sign-in the window hides itself and
+        // the sync finishes headlessly, so without this toast nothing tells a
+        // fresh user it worked or where the playlists went.
+        if (trigger === "first-run") {
+          api.ui.showNotification("Spotify: " + state.refreshSummary + ". Find them in the Spotify view or on your Home shelves.");
+        }
         setSyncStage("Caching images…");
         cacheAllImages();
       } else {
@@ -2319,9 +2335,16 @@ function activate(api) {
       state.status = "error";
       state.errorMessage = "Sync failed: " + (err.message || err);
       recordCheckResult(0, 1);
+      // Same first-run dead-end as the sign-in-not-completed case: the error
+      // only renders in the plugin view, which a fresh user isn't watching.
+      if (trigger === "first-run") {
+        api.ui.showNotification("Spotify sync failed — open the Spotify view and click Sync to retry.");
+      }
       render();
     });
-  });
+  }
+
+  api.ui.onAction("sync", function() { startSync("sync"); });
 
   api.ui.onAction("cancel", function() {
     scrapeGeneration++;
@@ -2777,14 +2800,16 @@ function activate(api) {
   // Load playlists from the filesystem layout (playlists/{section}/{id}/...).
   // Fall back to the legacy spotify_browse_state KV entry for a one-time
   // migration, then delete it.
+  // Resolves true when an existing library was restored (disk or legacy KV),
+  // false on a genuinely fresh install. Feeds the first-activation hook below.
   function loadInitialState() {
-    loadPlaylistsFromDisk().then(function (result) {
+    return loadPlaylistsFromDisk().then(function (result) {
       if (result.playlists.length > 0) {
         state.playlists = result.playlists;
         state.playlistTracks = result.tracks;
         state.status = "done";
         render();
-        return;
+        return true;
       }
       // Fall back to legacy KV state for migration
       return api.storage.get("spotify_browse_state").then(function (saved) {
@@ -2797,16 +2822,44 @@ function activate(api) {
             api.storage.delete("spotify_browse_state").catch(console.error);
           }).catch(console.error);
           render();
-        } else {
-          render();
+          return true;
         }
+        render();
+        return false;
       });
     }).catch(function (err) {
       console.error("Failed to load state:", err);
       render();
+      // Treat a load failure as "has data" so a transient disk error can never
+      // pop the first-run sign-in window for an established user.
+      return true;
     });
   }
-  loadInitialState();
+
+  // One-shot first-activation hook: on a genuinely fresh install (no restored
+  // library, never synced), start the initial sync automatically instead of
+  // waiting for a manual Sync click. The sync's login-check flow then surfaces
+  // the embedded browser with the sign-in banner if the user isn't logged in
+  // to Spotify; with an existing session it completes headlessly. Guarded by a
+  // persisted flag so it runs at most once — established installs just set the
+  // flag silently and never see an unexpected popup.
+  function maybeFirstRunLogin(hasData) {
+    Promise.all([
+      api.storage.get("spotify_browse_first_run_done"),
+      api.storage.get("spotify_browse_preferences"),
+    ]).then(function (res) {
+      var alreadyDone = res[0];
+      var prefs = res[1];
+      if (alreadyDone) return;
+      api.storage.set("spotify_browse_first_run_done", true).catch(console.error);
+      if (hasData || (prefs && prefs.lastCheckAt)) return;
+      plog("info", "flow", "first activation — starting initial sync (sign-in prompt if needed)");
+      api.ui.showNotification("Spotify: loading your playlists — you'll be asked to sign in if needed.");
+      startSync("first-run");
+    }).catch(console.error);
+  }
+
+  loadInitialState().then(maybeFirstRunLogin).catch(console.error);
   // Make sure shelves register immediately if state.sections has any defaults,
   // even before loadInitialState resolves.
   syncHomeShelves();

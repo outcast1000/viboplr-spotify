@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+- On first activation of a fresh install, the plugin now starts the initial
+  sync automatically and asks the user to sign in to Spotify in the embedded
+  browser window if needed — no manual Sync click required. One-shot
+  (`spotify_browse_first_run_done` guard); existing installs are unaffected.
+- The first-run sync reports its outcome as notifications: a success toast
+  ("Synced N playlists across M shelves…" with where to find them), and a
+  guidance toast to open the Spotify view and click Sync if sign-in was
+  abandoned or the sync failed.
+
 ## v1.12.9
 - Playlist cards now keep the scraped subtitle (e.g. "With X, Y…") visible even
   after their tracks are fetched, instead of replacing it with the track count.

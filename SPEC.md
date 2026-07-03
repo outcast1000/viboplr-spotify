@@ -80,6 +80,26 @@ resolution.
 
 ## Scraping Flow
 
+### Phase 0: First activation (one-shot)
+On the very first activation of a fresh install (no on-disk playlists, no
+legacy KV state, never synced), the plugin starts the initial sync
+automatically instead of waiting for a manual Sync click, and shows a
+notification explaining what's happening. The normal login-check flow
+(Phase 1) then asks the user to sign in in the embedded browser window if
+they aren't logged in; with an existing session the sync completes headlessly.
+This is guarded by the `spotify_browse_first_run_done` storage key so it runs
+at most once — established installs (existing library or a prior
+`lastCheckAt`) just set the flag silently and never see an unexpected popup.
+A failed initial-state load is treated as "has data" so a transient disk
+error can't trigger the popup for an established user.
+
+Because a fresh user isn't watching the plugin view (where sync status
+renders) and the one-shot flag means there is no re-prompt, the first-run
+sync closes the loop with notifications: a success toast summarizing what was
+synced and where to find it, and a guidance toast ("open the Spotify view and
+click Sync") when sign-in wasn't completed (window closed) or the sync
+failed. Manual syncs show none of these — their status lives in the toolbar.
+
 ### Phase 1: Login Check
 1. Open `open.spotify.com` in browse window (visible or headless)
 2. Poll every 3s by injecting `SCRIPT_CHECK_LOGIN`
@@ -137,6 +157,7 @@ it (or clicks "Refresh tracks"):
 | `spotify_browse_sections` | `string[]` | Last-scraped section names + order (cold-start render cache; derived from the scrape, not user-configured) |
 | `spotify_browse_section_descriptions` | `{ [section]: string }` | Last-scraped shelf description lines (cold-start render cache) |
 | `spotify_browse_preferences` | `{ showBrowserOnRefresh, autoRefreshHours, debugLogging, lastCheckAt, lastCheckResult }` | User preferences + last check info |
+| `spotify_browse_first_run_done` | `boolean` | One-shot guard for the first-activation auto-sync / sign-in prompt |
 
 The authoritative playlist/track store is the on-disk layout
 `playlists/{section}/{id}/{meta.json,tracks.json,cover.jpg,track-*.jpg}`.
