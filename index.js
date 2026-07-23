@@ -58,11 +58,24 @@ function activate(api) {
     // Section name -> shelf description (gray text under the heading), from the
     // last scrape. Cold-start cache loaded at init.
     sectionDescriptions: {},
+    // MRU of playlist ids the user has actually loaded (viewed / played /
+    // enqueued / force-refreshed), most-recent first. Persisted to
+    // spotify_browse_recently_loaded and loaded at init. Drives the refresh
+    // prefetch (prefetchRecentlyLoaded) so a frequently-used playlist's tracks
+    // are already warm the next time the user opens it.
+    recentlyLoaded: [],
   };
 
   // Lazy-track cache TTL. Tracks scraped on demand are reused for this long
   // before a View/Play triggers a fresh scrape. See the lazy-single-page spec.
   var TRACKS_TTL_MS = 24 * 60 * 60 * 1000;
+
+  // Refresh prefetch: how many of the most-recently user-loaded playlists to
+  // warm during a refresh, and how many ids to remember. RECENT_MAX keeps a few
+  // extra beyond PREFETCH_COUNT so that after a sync drops some playlists we
+  // still have PREFETCH_COUNT survivors to warm. See prefetchRecentlyLoaded.
+  var PREFETCH_COUNT = 5;
+  var RECENT_MAX = 10;
 
   // True if this playlist's cached tracks are still fresh (within TTL) AND we
   // actually have tracks in memory for it. Missing/old tracksFetchedAt => stale.
@@ -73,6 +86,21 @@ function activate(api) {
     var tracks = state.playlistTracks[pl.id];
     if (!tracks || tracks.length === 0) return false;
     return (Date.now() - t) < TRACKS_TTL_MS;
+  }
+
+  // Record a user-initiated "load" of a playlist (view / play / enqueue / force
+  // refresh). Moves its id to the front of the MRU, dedups, trims to RECENT_MAX,
+  // and persists. This list is what prefetchRecentlyLoaded warms on refresh.
+  function noteRecentlyLoaded(pl) {
+    if (!pl || !pl.id) return;
+    var id = pl.id;
+    var list = state.recentlyLoaded || [];
+    var next = [id];
+    for (var i = 0; i < list.length && next.length < RECENT_MAX; i++) {
+      if (list[i] !== id) next.push(list[i]);
+    }
+    state.recentlyLoaded = next;
+    api.storage.set("spotify_browse_recently_loaded", next).catch(console.error);
   }
 
   // ---- Helpers ----
@@ -978,6 +1006,7 @@ function activate(api) {
   // in-flight scrape loop so it stops eval-ing into a closing window.
   closeOpenWindows = function () {
     scrapeGeneration++;
+    cancelPrefetch();
     if (activeScrapeHandle) { activeScrapeHandle.close().catch(function () {}); activeScrapeHandle = null; }
     if (dbgTest.handle) { dbgTest.handle.close().catch(function () {}); dbgTest.handle = null; }
     windowBusy = false;
@@ -2255,8 +2284,59 @@ function activate(api) {
     return true;
   }
 
+  // ---- Refresh prefetch (warm recently-loaded playlists) ----
+
+  // A monotonically-increasing token that supersedes/cancels a running prefetch
+  // chain. Starting a new chain (`++prefetchToken`) or calling cancelPrefetch()
+  // bumps it; the in-flight loop checks it at each playlist boundary and bails.
+  var prefetchToken = 0;
+
+  // Yield the single browse window to a user action (or an explicit cancel):
+  // stop enqueuing further prefetch scrapes. The scrape currently in flight (if
+  // any) is left to settle and cache normally — only the queued remainder is
+  // dropped, so the user isn't stuck behind up to PREFETCH_COUNT background
+  // scrapes.
+  function cancelPrefetch() { prefetchToken++; }
+
+  // After a refresh, warm the tracks of the most-recently user-loaded playlists
+  // (up to PREFETCH_COUNT) that still exist, one at a time — the single-window
+  // constraint (withSpotifyWindow rejects concurrent opens) forbids parallel
+  // scrapes. Playlists whose cached tracks are still fresh are skipped without
+  // opening a window, so this is cheap when nothing has expired. Best-effort:
+  // per-playlist failures (including a "busy" rejection from a racing user
+  // action) are logged and skipped, and the whole chain bails at the next
+  // boundary if superseded by a newer prefetch or cancelled. Fire-and-forget —
+  // it never blocks the refresh UI.
+  function prefetchRecentlyLoaded() {
+    var myToken = ++prefetchToken;
+    var ids = state.recentlyLoaded || [];
+    var targets = [];
+    for (var i = 0; i < ids.length && targets.length < PREFETCH_COUNT; i++) {
+      var pl = findPlaylistById(ids[i]);
+      if (pl) targets.push(pl);
+    }
+    if (targets.length === 0) return Promise.resolve();
+    plog("info", "prefetch", "warming up to " + targets.length + " recently-loaded playlist(s)");
+    return targets.reduce(function (chain, pl) {
+      return chain.then(function () {
+        if (prefetchToken !== myToken) return;   // superseded or cancelled
+        if (tracksAreFresh(pl)) return;          // already warm — no window needed
+        return ensureTracks(pl).catch(function (e) {
+          plog("warn", "prefetch", "warm failed for \"" + pl.name + "\": " + (e && e.message ? e.message : e));
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      if (prefetchToken !== myToken) return;
+      plog("info", "prefetch", "finished warming recently-loaded playlists");
+      render();
+    });
+  }
+
   function silentRefresh() {
     if (state.refreshing) return;
+    // Supersede any prefetch still warming from a prior refresh before opening
+    // this refresh's browse window.
+    cancelPrefetch();
     state.refreshing = true;
 
     syncPlaylists(false, "auto-refresh").then(function (result) {
@@ -2272,6 +2352,9 @@ function activate(api) {
       api.scheduler.complete("auto-refresh").catch(console.error);
       state.status = "done";
       render();
+      // Warm the user's recently-loaded playlists in the background now that the
+      // list refresh (and its browse window) is done. Fire-and-forget.
+      prefetchRecentlyLoaded();
     }).catch(function (err) {
       state.refreshing = false;
       recordCheckResult(0, 1);
@@ -2287,6 +2370,9 @@ function activate(api) {
   // asks the user to sign in to Spotify (surfaced window + banner) if they
   // aren't already logged in.
   function startSync(trigger) {
+    // A new sync supersedes any background prefetch still warming from a prior
+    // refresh, so it doesn't lose the single browse window to a "busy" reject.
+    cancelPrefetch();
     state.status = "waiting-login";
     state.errorMessage = "";
     state.refreshSummary = "";
@@ -2329,6 +2415,10 @@ function activate(api) {
       state.syncStage = "";
       state.status = "done";
       render();
+      // Warm the user's recently-loaded playlists in the background now that the
+      // sync's browse window has closed. Fire-and-forget; a user action (Play /
+      // View / Enqueue) cancels the remaining queue so it yields the window.
+      prefetchRecentlyLoaded();
     }).catch(function(err) {
       state.refreshing = false;
       state.syncStage = "";
@@ -2348,6 +2438,7 @@ function activate(api) {
 
   api.ui.onAction("cancel", function() {
     scrapeGeneration++;
+    cancelPrefetch();
     if (activeScrapeHandle) {
       activeScrapeHandle.close().catch(console.error);
       activeScrapeHandle = null;
@@ -2390,6 +2481,8 @@ function activate(api) {
   function openPlaylistById(pid) {
     var pl = findPlaylistById(pid);
     if (!pl) return false;
+    noteRecentlyLoaded(pl);
+    cancelPrefetch();
     state.currentPlaylist = pl;
     state.currentView = "playlist";
     if (!tracksAreFresh(pl)) {
@@ -2455,6 +2548,8 @@ function activate(api) {
   // modal it itself showed, on every settle path (success, empty, OR error), so
   // the blocking modal can never stick. Returns the tracks promise.
   function fetchTracksWithLoading(pl) {
+    noteRecentlyLoaded(pl);
+    cancelPrefetch();
     var showed = false;
     if (!tracksAreFresh(pl) && !loadingModalActive) {
       loadingModalActive = true;
@@ -2563,6 +2658,8 @@ function activate(api) {
   api.ui.onAction("refresh-tracks-ctx", function(data) {
     var pl = findPlaylistFromData(data);
     if (!pl) return;
+    noteRecentlyLoaded(pl);
+    cancelPrefetch();
     api.ui.showNotification("Refreshing tracks for " + pl.name + "…");
     ensureTracks(pl, { force: true }).then(function () {
       if (state.currentPlaylist && state.currentPlaylist.id === pl.id) renderPlaylist();
@@ -2786,6 +2883,8 @@ function activate(api) {
         api.home.onResolvePlay(id, function (item) {
           var pl = item && item.id ? findPlaylistById(String(item.id)) : null;
           if (!pl) return Promise.resolve([]);
+          noteRecentlyLoaded(pl);
+          cancelPrefetch();
           return ensureTracks(pl).then(function (tracks) {
             return toPluginTracks(tracks || []);
           });
@@ -2878,6 +2977,12 @@ function activate(api) {
   }).catch(console.error);
   api.storage.get("spotify_browse_section_descriptions").then(function(descs) {
     if (descs && typeof descs === "object") state.sectionDescriptions = descs;
+  }).catch(console.error);
+
+  // Restore the recently-loaded MRU (drives the refresh prefetch of the user's
+  // last-loaded playlists). Trim to RECENT_MAX in case an older build stored more.
+  api.storage.get("spotify_browse_recently_loaded").then(function(list) {
+    if (Array.isArray(list)) state.recentlyLoaded = list.slice(0, RECENT_MAX);
   }).catch(console.error);
 
   // One-time cleanup: remove the old Liked Songs on-disk directory and its

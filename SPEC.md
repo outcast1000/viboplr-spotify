@@ -8,11 +8,13 @@ like "Made for You", so the plugin navigates the DOM directly.
 
 The plugin loads the **Music home page** (`open.spotify.com/home?facet=music-chip`)
 in a single pass and scrapes every playlist card across all shelves, grouping
-them by shelf heading. It does **not** prefetch track listings — a playlist's
-tracks are scraped lazily the first time the user views, plays, or enqueues it,
-and cached on disk for 24 hours. Users can save playlists to the app's
-saved-playlists store and play/enqueue scraped tracks through Viboplr's fallback
-resolution.
+them by shelf heading. The sync itself does **not** scrape track listings — a
+playlist's tracks are scraped lazily the first time the user views, plays, or
+enqueues it, and cached on disk for 24 hours. As an optimization, after each
+refresh the plugin **prefetches the tracks of the last few playlists the user
+actually loaded** (see *Refresh Prefetch* below) so those stay warm. Users can
+save playlists to the app's saved-playlists store and play/enqueue scraped
+tracks through Viboplr's fallback resolution.
 
 ## Architecture
 
@@ -138,6 +140,33 @@ it (or clicks "Refresh tracks"):
    stamp, so the next view retries soon.
 5. A non-empty scrape stamps `tracksFetchedAt`, persists to disk, and caches images.
 
+### Refresh Prefetch (warm recently-loaded playlists)
+
+Because the sync only refreshes the playlist *list*, the first View/Play/Enqueue
+of any playlist after its 24h track cache expires pays the full scroll-scrape
+latency. To hide that for the playlists a user actually uses, the plugin keeps a
+small **most-recently-loaded** list and warms it on refresh:
+
+1. Every user-initiated load of a playlist — View (`openPlaylistById`),
+   Play/Enqueue (`fetchTracksWithLoading`), a Home-shelf play
+   (`onResolvePlay`), or a force "Refresh tracks" (`refresh-tracks-ctx`) — calls
+   `noteRecentlyLoaded(pl)`, which moves the id to the front of an MRU
+   (deduped, capped at `RECENT_MAX = 10`, persisted to
+   `spotify_browse_recently_loaded`).
+2. After a refresh completes (both the manual `startSync` and the silent
+   auto-refresh `silentRefresh`), `prefetchRecentlyLoaded()` warms the top
+   `PREFETCH_COUNT = 5` still-existing playlists **sequentially** (the
+   single-window constraint forbids parallel scrapes). Playlists whose cached
+   tracks are still fresh are skipped without opening a window, so it's a no-op
+   when nothing has expired.
+3. It is **best-effort and headless**: per-playlist failures are logged and
+   skipped, and the whole chain is superseded/cancelled via a `prefetchToken`.
+4. **Yields the window to the user:** every user-initiated load (and the Cancel
+   button / deactivate) calls `cancelPrefetch()`, which stops the loop from
+   enqueuing further scrapes. The one scrape already in flight is left to settle
+   and cache normally, so a user click is at worst stuck behind a single
+   in-flight scrape, never the whole queue.
+
 ### Generation Guard & single-window serialization
 - `scrapeGeneration` increments on each new browse-window open (`withSpotifyWindow`)
   and on cancel. All async callbacks check `ctx.isStale()` (`gen !== scrapeGeneration`)
@@ -158,6 +187,7 @@ it (or clicks "Refresh tracks"):
 | `spotify_browse_section_descriptions` | `{ [section]: string }` | Last-scraped shelf description lines (cold-start render cache) |
 | `spotify_browse_preferences` | `{ showBrowserOnRefresh, autoRefreshHours, debugLogging, lastCheckAt, lastCheckResult }` | User preferences + last check info |
 | `spotify_browse_first_run_done` | `boolean` | One-shot guard for the first-activation auto-sync / sign-in prompt |
+| `spotify_browse_recently_loaded` | `string[]` | MRU of playlist ids the user loaded (most-recent first, capped at `RECENT_MAX`). Drives the refresh prefetch. |
 
 The authoritative playlist/track store is the on-disk layout
 `playlists/{section}/{id}/{meta.json,tracks.json,cover.jpg,track-*.jpg}`.
@@ -207,8 +237,12 @@ on cards and the detail header. A failed track scrape is retried up to twice
 - Configurable interval: 0 (off), 6, 12, 24, 48, or 168 hours
 - Uses `api.scheduler.register("auto-refresh", intervalMs)`
 - Silent refresh runs headless and refreshes the **playlist list only**
-  (`syncPlaylists`) — it does **not** scrape tracks. Cached tracks expire on
-  their own 24h timer.
+  (`syncPlaylists`) — it does **not** scrape tracks for the whole library.
+  Cached tracks expire on their own 24h timer.
+- After the list refresh, `prefetchRecentlyLoaded()` warms the tracks of the
+  last `PREFETCH_COUNT` playlists the user loaded (see *Refresh Prefetch*), so
+  frequently-used playlists are ready without paying scrape latency on the next
+  open. This runs after both auto-refresh and a manual Sync.
 - Badge shows error dot on failure
 
 ## Actions Reference
@@ -253,7 +287,9 @@ on cards and the detail header. A failed track scrape is retried up to twice
   a future enhancement.
 - **First-play latency:** the first View/Play/Enqueue of an uncached (or
   24h-expired) playlist pays the full scroll-scrape time (seconds), mitigated by
-  caching + loading states but not eliminated.
+  caching + loading states + the refresh prefetch of recently-loaded playlists,
+  but not eliminated (a playlist the user hasn't loaded recently, or one loaded
+  beyond `PREFETCH_COUNT`, still scrapes on first demand).
 - **Empty-scrape guard:** a sync that returns zero playlists while a library
   already exists is rejected to avoid wiping it on a timeout/parse error. The
   tradeoff is that a genuinely-emptied Spotify account keeps showing the old

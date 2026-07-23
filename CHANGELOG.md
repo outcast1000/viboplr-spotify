@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.14.0
+- Refresh now **prefetches the tracks of the last 5 playlists you actually
+  loaded** (viewed / played / enqueued / force-refreshed), so a frequently-used
+  playlist is ready to play instead of paying the full scrape delay on the next
+  open. Runs after both a manual Sync and the silent auto-refresh.
+- The prefetch is best-effort and headless: it warms playlists one at a time
+  (respecting the single-browser-window limit), skips ones whose cached tracks
+  are still fresh (no window opened), and logs+skips any that fail.
+- It yields the browser window to you: opening/playing a playlist (or clicking
+  Cancel) stops the remaining prefetch queue, so you're never stuck waiting on
+  background warming — at most one already-running scrape.
+- The recently-loaded list is remembered across sessions
+  (`spotify_browse_recently_loaded`).
+
 ## v1.13.0
 - On first activation of a fresh install, the plugin now starts the initial
   sync automatically and asks the user to sign in to Spotify in the embedded
