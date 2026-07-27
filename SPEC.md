@@ -140,6 +140,39 @@ it (or clicks "Refresh tracks"):
    stamp, so the next view retries soon.
 5. A non-empty scrape stamps `tracksFetchedAt`, persists to disk, and caches images.
 
+### Start Spotify radio (`startSpotifyRadio`)
+
+A **universal track context-menu item** ("Start Spotify radio", registered via
+`api.contextMenu.registerItem` on the `track` target) starts a Spotify radio
+seeded from any track in the app. The app-side `PluginContextMenuTarget` carries
+only `title` + `artistName` (no Spotify id), so the flow searches for the seed
+first. It runs inside `withSpotifyWindow` (so it inherits the login flow, the
+single-window gate, and the generation guard) as a small state machine driven by
+the message bridge:
+
+1. **search → seed** — open at `searchTracksUrl(title + " " + artist)`
+   (`/search/{q}/tracks`), inject `scriptSearchTopTrack`, take the first track
+   row's Spotify id (`radio-seed`).
+2. **go-radio** — navigate to `/track/{id}`, inject `scriptGoToRadio` which
+   clicks the `…` more menu's "Go to song radio" item (`radio-go`). That click
+   navigates to the radio tracklist page.
+3. **scrape** — after the page settles, reuse `scriptScrollThenScrape` (keyed by
+   the synthetic id `radio-station`) to scrape the radio tracklist.
+
+The scraped tracks **replace the queue and play** via
+`api.playback.playTracks(tracks, 0, { name: "Spotify radio · {title}", source: "radio" })`.
+Progress is covered by the host loading modal; each failure path (seed not found,
+radio menu item missing, empty tracklist, `withSpotifyWindow` busy-reject) shows a
+notification and leaves the queue untouched. Each step has its own timeout and the
+generation guard aborts stale work exactly like `ensureTracks`.
+
+Because the search-results DOM and the "Go to song radio" menu item are the two
+selector-fragile bits, `npm run verify:radio [seed query]` drives this exact flow
+against the live Spotify DOM (headed, reusing the `verify:scrape` login profile)
+and prints where it fails — including the menu-item labels it saw when the radio
+item isn't found. Run it with `VERIFY_DEBUG=1` to surface the injected scripts'
+`_dbg` stream.
+
 ### Refresh Prefetch (warm recently-loaded playlists)
 
 Because the sync only refreshes the playlist *list*, the first View/Play/Enqueue
@@ -264,6 +297,11 @@ on cards and the detail header. A failed track scrape is retried up to twice
 | `save-playlist` | Detail view button | Save to app playlists via `api.playlists.save` |
 | `save-playlist-ctx` | Card context menu | Save to app playlists |
 
+### Track Actions (universal context menu)
+| Action | Context | Behavior |
+|--------|---------|----------|
+| `start-spotify-radio` | Any track's right-click menu (library / queue / playlist / plugin / search) | `startSpotifyRadio(title, artist)` — search → go-to-radio → scrape → replace queue and play (see *Start Spotify radio*) |
+
 ## Injected Scripts
 
 | Script | Purpose | Key Selector |
@@ -271,7 +309,11 @@ on cards and the detail header. A failed track scrape is retried up to twice
 | `SCRIPT_CHECK_LOGIN` | Detect login state | `[data-testid="user-widget-link"]`, `[data-testid="login-button"]` |
 | `SCRIPT_SCRAPE_SHELVES` | Scrape all shelves on the music-chip home (heading, description, cards) | document-order sweep over `h1,h2,h3,[role="heading"]` + `a[href*="/playlist/"]` |
 | `scriptNavigatePlaylist(id)` | Navigate to playlist page | Direct URL assignment |
-| `scriptScrollThenScrape(id, gen)` | Scroll + parse tracks | `[role="row"]` inside `[data-testid="playlist-tracklist"]` |
+| `scriptScrollThenScrape(id, gen)` | Scroll + parse tracks (also reused for the radio tracklist) | `[role="row"]` inside `[data-testid="playlist-tracklist"]` |
+| `scriptNavigateSearch(query)` | Navigate to the `/search/{q}/tracks` page (radio seed) | direct URL assignment |
+| `scriptSearchTopTrack(gen)` | Pick the top track result → `radio-seed {trackId,name,artist}` | first `a[href*="/track/"]` in `main` |
+| `scriptNavigateTrackPage(id)` | Navigate to `/track/{id}` (radio seed) | direct URL assignment |
+| `scriptGoToRadio(gen)` | Open the `…` menu, click "Go to song radio" → `radio-go` | `button[data-testid="more-button"]` + `[role="menuitem"]` matching `/radio/i` |
 | `SCRIPT_LOGIN_BANNER` | Inject "please sign in" banner when not logged in | fixed-position `<div>` prepended to `<html>` |
 | `SCRIPT_REMOVE_LOGIN_BANNER` | Remove the sign-in banner once logged in | by element id |
 
@@ -294,3 +336,11 @@ on cards and the detail header. A failed track scrape is retried up to twice
   already exists is rejected to avoid wiping it on a timeout/parse error. The
   tradeoff is that a genuinely-emptied Spotify account keeps showing the old
   library until a non-empty scrape succeeds.
+- **Start Spotify radio** was verified against live Spotify via
+  `npm run verify:radio` (search seed → "Go to song radio" → 50-track scrape).
+  Spotify's song radio resolves to a real `/playlist/{id}` page, so the reused
+  `scriptScrollThenScrape` parser handles it as a normal tracklist. That page has
+  **no cover image** (og:image absent, `playlist-image` has no usable src), so the
+  radio queue banner shows the title only — per-row track art still resolves. Re-run
+  `verify:radio` if `scriptSearchTopTrack` / `scriptGoToRadio` ever stop finding a
+  seed or the radio menu item (Spotify DOM drift).

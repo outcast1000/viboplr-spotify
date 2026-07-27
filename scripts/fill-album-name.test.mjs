@@ -9,8 +9,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const INDEX_PATH = new URL("../index.js", import.meta.url).pathname;
+// fileURLToPath (not .pathname) so the path is valid on Windows too — .pathname
+// yields "/D:/…", which fails to open.
+const INDEX_PATH = fileURLToPath(new URL("../index.js", import.meta.url));
 
 // Pull `function fillAlbumName(...) { ... }` out of index.js by brace-matching
 // from the declaration to its matching close brace.

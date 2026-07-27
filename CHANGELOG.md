@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.15.0
+- New **"Start Spotify radio"** action on the right-click menu of any track,
+  anywhere in the app (library, queue, playlist, plugin views, search results).
+  It searches Spotify for the track, opens its "Go to song radio" station, and
+  scrapes the radio tracklist — then replaces the queue and starts playing it.
+- The whole flow reuses the existing Spotify browse window (so it shares the
+  sign-in prompt, the single-window limit, and cancellation) and the proven
+  track-list scraper. Each step is best-effort: if the track can't be found, the
+  radio menu item is missing, or the station comes back empty, a notification
+  explains it and your current queue is left untouched.
+- Dev tooling: `npm run verify:radio "<seed query>"` drives the radio flow
+  against the live Spotify page to catch DOM/selector drift, and a Windows
+  path-handling bug in the test scripts is fixed so `npm test` runs there too.
+
+
 ## v1.14.0
 - Refresh now **prefetches the tracks of the last 5 playlists you actually
   loaded** (viewed / played / enqueued / force-refreshed), so a frequently-used

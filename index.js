@@ -1865,6 +1865,101 @@ function activate(api) {
   //
   // Resolves null if the scrape was cancelled or the window closed before login.
   var MUSIC_CHIP_URL = "https://open.spotify.com/home?facet=music-chip";
+
+  // ---- "Start Spotify radio" scrape scripts ----
+  //
+  // A track's context menu (any surface in the app) can start a Spotify radio.
+  // The app-side target carries only title + artist (no Spotify id), so the flow
+  // is: search Spotify for the seed track -> open its "Go to song radio" page ->
+  // scrape the resulting tracklist (reusing scriptScrollThenScrape's row parser).
+  // These builders live inside the SCRAPE-SCRIPTS markers so scripts/verify-radio
+  // can exercise them against the live Spotify DOM without the host app.
+
+  var SEARCH_BASE = "https://open.spotify.com/search/";
+  // The "/tracks" facet renders a full song tracklist (not the mixed top-results
+  // page), so the first [role="row"] is the best track match to seed the radio.
+  function searchTracksUrl(query) {
+    return SEARCH_BASE + encodeURIComponent(query) + "/tracks";
+  }
+
+  function scriptNavigateSearch(query) {
+    return '(function(){' + DBG_HELPER +
+      '_dbg("radio","navigating to search",{q:' + JSON.stringify(String(query)) + '});' +
+      'window.location.href=' + JSON.stringify(searchTracksUrl(query)) + ';' +
+    '})()';
+  }
+
+  // On the search "/tracks" page: pick the first real track link and post its
+  // Spotify id + name + artist back as a "radio-seed" message (or an error).
+  function scriptSearchTopTrack(gen) {
+    return '(function(){try{' +
+      DBG_HELPER +
+      'var _gen=' + gen + ';' +
+      'var scope=document.querySelector("main")||document;' +
+      'var links=scope.querySelectorAll("a[href*=\\"/track/\\"]");' +
+      '_dbg("radio","search track links",{count:links.length,url:location.href});' +
+      'var picked=null;' +
+      'for(var i=0;i<links.length;i++){' +
+        'var href=links[i].getAttribute("href")||"";' +
+        'var rest=href.split("/track/")[1];' +
+        'if(!rest)continue;' +
+        'var id=rest.split("?")[0].split("/")[0];' +
+        'if(id){picked={id:id,el:links[i]};break;}' +
+      '}' +
+      'if(!picked){window.__viboplr.send("radio-seed",{error:"no track results",url:location.href,gen:_gen});return;}' +
+      'var name=(picked.el.textContent||"").trim();' +
+      'var row=(picked.el.closest?picked.el.closest("[role=\\"row\\"]"):null)||picked.el.parentElement;' +
+      'var artist="";' +
+      'if(row){var a=row.querySelector("a[href*=\\"/artist/\\"]");if(a)artist=(a.textContent||"").trim();}' +
+      '_dbg("radio","picked seed",{id:picked.id,name:name,artist:artist});' +
+      'window.__viboplr.send("radio-seed",{trackId:picked.id,name:name,artist:artist,gen:_gen});' +
+    '}catch(e){try{window.__viboplr.send("radio-seed",{error:"search script error: "+e,gen:' + gen + '})}catch(_){}}})()';
+  }
+
+  function scriptNavigateTrackPage(id) {
+    return '(function(){' + DBG_HELPER +
+      '_dbg("radio","navigating to track",{id:' + JSON.stringify(String(id)) + '});' +
+      'window.location.href="/track/"+' + JSON.stringify(String(id)) + ';' +
+    '})()';
+  }
+
+  // On a track page: open the "..." more menu and click "Go to song radio",
+  // which navigates to the radio tracklist page. Posts "radio-go" with {ok} or
+  // {error, menuItems} (the collected item labels help diagnose a selector drift).
+  function scriptGoToRadio(gen) {
+    return '(function(){try{' +
+      DBG_HELPER +
+      'var _gen=' + gen + ';' +
+      'function findMore(){' +
+        'return document.querySelector("button[data-testid=\\"more-button\\"]")' +
+          '||document.querySelector("main button[aria-label^=\\"More options\\"]")' +
+          '||document.querySelector("button[aria-label^=\\"More options\\"]");' +
+      '}' +
+      'var more=findMore();' +
+      'if(!more){window.__viboplr.send("radio-go",{error:"more button not found",url:location.href,gen:_gen});return;}' +
+      '_dbg("radio","clicking more button");' +
+      'more.click();' +
+      'var tries=0;var MAX=14;' +
+      'function clickRadio(){' +
+        'tries++;' +
+        'var items=document.querySelectorAll("[role=\\"menuitem\\"]");' +
+        'var target=null;var labels=[];' +
+        'for(var i=0;i<items.length;i++){var t=(items[i].textContent||"").trim();labels.push(t);' +
+          'if(/radio/i.test(t)){target=items[i];break;}}' +
+        'if(target){' +
+          '_dbg("radio","clicking radio menu item",{label:(target.textContent||"").trim()});' +
+          'target.click();' +
+          'window.__viboplr.send("radio-go",{ok:true,label:(target.textContent||"").trim(),gen:_gen});' +
+          'return;' +
+        '}' +
+        'if(tries<MAX){setTimeout(clickRadio,250);return;}' +
+        '_dbg("radio","radio menu item not found",{menuItems:labels});' +
+        'window.__viboplr.send("radio-go",{error:"radio menu item not found",menuItems:labels,gen:_gen});' +
+      '}' +
+      'setTimeout(clickRadio,350);' +
+    '}catch(e){try{window.__viboplr.send("radio-go",{error:"radio script error: "+e,gen:' + gen + '})}catch(_){}}})()';
+  }
+
   // <<< SCRAPE-SCRIPTS-END
 
   function withSpotifyWindow(opts, fn) {
@@ -2585,6 +2680,155 @@ function activate(api) {
       api.playback.insertTracks(toPluginTracks(tracks), -1);
     }).catch(function (e) { console.error(e); });
   });
+
+  // ---- Start Spotify radio (universal track context menu) ----
+  //
+  // Registered on the "track" target so it appears on every track surface in the
+  // app (library, queue, playlist, plugin views, search). The app-side target
+  // carries only title + artist, so we search Spotify for the seed, open its
+  // "Go to song radio" page, scrape the radio tracklist, then replace the queue
+  // and play it. Reuses withSpotifyWindow (login flow + single-window gate +
+  // generation guard) and scriptScrollThenScrape (the shared row parser).
+
+  // Synthetic playlist id used to key the reused track-scrape messages for the
+  // radio page (it isn't a real playlist).
+  var RADIO_SCRAPE_ID = "radio-station";
+
+  function startSpotifyRadio(seedTitle, seedArtist) {
+    if (!seedTitle) {
+      api.ui.showNotification("Can't start radio: this track has no title.");
+      return Promise.resolve();
+    }
+    var query = seedArtist ? (seedTitle + " " + seedArtist) : seedTitle;
+    var visible = !!state.showBrowserOnRefresh;
+
+    // Show the host's blocking loading modal for the whole flow (search + nav +
+    // radio + scrape can take 15–25s), unless one is already up (a concurrent
+    // action — withSpotifyWindow will reject the second open anyway).
+    var showedModal = false;
+    if (!loadingModalActive) {
+      loadingModalActive = true;
+      showedModal = true;
+      api.ui.requestAction("show-loading", { message: "Starting Spotify radio for “" + seedTitle + "”…" });
+    }
+    function hideModal() {
+      if (showedModal) { loadingModalActive = false; showedModal = false; api.ui.requestAction("hide-loading", {}); }
+    }
+
+    return withSpotifyWindow({ url: searchTracksUrl(query), visible: visible }, function (h, ctx) {
+      return new Promise(function (resolve) {
+        var gen = ctx.gen;
+        var phase = "search"; // search -> go-radio -> scrape
+        var settled = false;
+        var timer = null;
+
+        function done(tracks) {
+          if (settled) return;
+          settled = true;
+          if (timer) { clearTimeout(timer); timer = null; }
+          resolve(tracks || []);
+        }
+        function armTimeout(ms, label) {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(function () {
+            plog("warn", "radio", label + " timeout");
+            done([]);
+          }, ms);
+        }
+
+        ctx.setHandler(function (msg) {
+          if (ctx.isStale() || settled) return;
+          if (msg.data && msg.data.gen != null && msg.data.gen !== gen) return;
+
+          if (msg.type === "radio-seed" && phase === "search") {
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (!msg.data || msg.data.error || !msg.data.trackId) {
+              plog("warn", "radio", "seed search failed", msg.data);
+              done([]);
+              return;
+            }
+            plog("info", "radio", "seed track: " + (msg.data.name || "?") + " — " + (msg.data.artist || "?"));
+            phase = "go-radio";
+            h.eval(scriptNavigateTrackPage(msg.data.trackId));
+            setTimeout(function () {
+              if (ctx.isStale() || settled) { done([]); return; }
+              h.eval(scriptGoToRadio(gen));
+              armTimeout(20000, "go-radio");
+            }, 4000);
+            return;
+          }
+
+          if (msg.type === "radio-go" && phase === "go-radio") {
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (!msg.data || msg.data.error || !msg.data.ok) {
+              plog("warn", "radio", "could not open song radio", msg.data);
+              done([]);
+              return;
+            }
+            phase = "scrape";
+            // The click navigates to the radio page; let it settle, then scrape
+            // its tracklist with the shared row parser (synthetic playlist id).
+            setTimeout(function () {
+              if (ctx.isStale() || settled) { done([]); return; }
+              h.eval(scriptScrollThenScrape(RADIO_SCRAPE_ID, gen, { maxSteps: 40 }));
+              armTimeout(45000, "radio scrape");
+            }, 4500);
+            return;
+          }
+
+          if (msg.type === "tracks" && msg.data && msg.data.playlistId === RADIO_SCRAPE_ID && phase === "scrape") {
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (msg.data.error) plog("warn", "radio", "radio scrape error: " + msg.data.error);
+            done(msg.data.tracks || []);
+            return;
+          }
+          // "tracks-progress" is ignored — the loading modal covers the wait.
+        });
+
+        // Kick off: (re)assert the search page (login may have redirected), then
+        // grab the seed track.
+        h.eval(scriptNavigateSearch(query));
+        setTimeout(function () {
+          if (ctx.isStale() || settled) { done([]); return; }
+          h.eval(scriptSearchTopTrack(gen));
+          armTimeout(20000, "seed search");
+        }, 4000);
+      });
+    }).then(function (tracks) {
+      hideModal();
+      if (!tracks || tracks.length === 0) {
+        api.ui.showNotification("Couldn't start a Spotify radio for “" + seedTitle + "”. The track wasn't found or Spotify's page changed.");
+        return;
+      }
+      // Replace the queue and play the radio (per the "start radio" semantics).
+      api.playback.playTracks(toPluginTracks(tracks), 0, {
+        name: "Spotify radio · " + seedTitle,
+        source: "radio",
+      });
+      api.ui.showNotification("Started Spotify radio · " + tracks.length + " tracks.");
+    }, function (e) {
+      hideModal();
+      var m = (e && e.message) || String(e);
+      api.ui.showNotification(m.indexOf("busy") !== -1
+        ? "Spotify is busy — try again in a moment."
+        : "Couldn't start Spotify radio.");
+      console.error("startSpotifyRadio failed:", e);
+    });
+  }
+
+  if (api.contextMenu && typeof api.contextMenu.registerItem === "function") {
+    api.contextMenu.registerItem({
+      id: "start-spotify-radio",
+      label: "Start Spotify radio",
+      targets: ["track"],
+    });
+  }
+  if (api.contextMenu && typeof api.contextMenu.onAction === "function") {
+    api.contextMenu.onAction("start-spotify-radio", function (target) {
+      if (!target) return;
+      startSpotifyRadio(target.title || "", target.artistName || "");
+    });
+  }
 
   // ---- Context menu actions for playlist cards ----
 

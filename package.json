@@ -6,6 +6,7 @@
   "description": "Dev tooling for the spotify-browse Viboplr plugin (NOT shipped in the plugin release)",
   "scripts": {
     "verify:scrape": "node scripts/verify-scrape.mjs",
+    "verify:radio": "node scripts/verify-radio.mjs",
     "test": "node --test \"scripts/**/*.test.mjs\""
   },
   "devDependencies": {

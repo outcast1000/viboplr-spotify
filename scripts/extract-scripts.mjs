@@ -32,6 +32,12 @@ export function extractScripts(indexPath) {
     scriptNavigatePlaylist: sandbox.scriptNavigatePlaylist,
     scriptScrollThenScrape: sandbox.scriptScrollThenScrape,
     MUSIC_CHIP_URL: sandbox.MUSIC_CHIP_URL,
+    // "Start Spotify radio" flow (search seed -> go-to-radio -> scrape tracklist).
+    searchTracksUrl: sandbox.searchTracksUrl,
+    scriptNavigateSearch: sandbox.scriptNavigateSearch,
+    scriptSearchTopTrack: sandbox.scriptSearchTopTrack,
+    scriptNavigateTrackPage: sandbox.scriptNavigateTrackPage,
+    scriptGoToRadio: sandbox.scriptGoToRadio,
   };
 
   for (const [k, v] of Object.entries(out)) {

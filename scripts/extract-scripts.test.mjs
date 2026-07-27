@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { extractScripts } from "./extract-scripts.mjs";
 
-// Resolve paths relative to this test file (ESM import.meta.url → filesystem path).
-const resolvePath = (rel) => new URL(rel, import.meta.url).pathname;
+// Resolve paths relative to this test file. fileURLToPath (not .pathname) so the
+// path is valid on Windows too — .pathname yields "/D:/…", which fails to open.
+const resolvePath = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 
 test("extracts the scrape scripts from index.js", () => {
   const s = extractScripts(resolvePath("../index.js"));
@@ -37,6 +39,25 @@ test("extracts the scrape scripts from index.js", () => {
   assert.doesNotThrow(() => new Function(s.scriptScrollThenScrape("abc123", 999)), "scriptScrollThenScrape parses");
 
   assert.equal(s.MUSIC_CHIP_URL, "https://open.spotify.com/home?facet=music-chip");
+
+  // "Start Spotify radio" builders.
+  assert.equal(typeof s.searchTracksUrl, "function");
+  assert.equal(
+    s.searchTracksUrl("Daft Punk One More Time"),
+    "https://open.spotify.com/search/Daft%20Punk%20One%20More%20Time/tracks"
+  );
+  for (const build of [s.scriptNavigateSearch, s.scriptSearchTopTrack, s.scriptNavigateTrackPage, s.scriptGoToRadio]) {
+    assert.equal(typeof build, "function");
+  }
+  assert.match(s.scriptNavigateSearch("q"), /^\(function\(\)\{/);
+  assert.ok(s.scriptSearchTopTrack(1).includes("radio-seed"), "seed script posts radio-seed");
+  assert.ok(s.scriptGoToRadio(1).includes("radio-go"), "go-radio script posts radio-go");
+  assert.ok(s.scriptNavigateTrackPage("abc123").includes("abc123"), "track nav embeds the id");
+  // Each eval'd radio script must be syntactically valid (harness eval()s them).
+  assert.doesNotThrow(() => new Function(s.scriptNavigateSearch("q")), "scriptNavigateSearch parses");
+  assert.doesNotThrow(() => new Function(s.scriptSearchTopTrack(1)), "scriptSearchTopTrack parses");
+  assert.doesNotThrow(() => new Function(s.scriptNavigateTrackPage("abc123")), "scriptNavigateTrackPage parses");
+  assert.doesNotThrow(() => new Function(s.scriptGoToRadio(1)), "scriptGoToRadio parses");
 });
 
 test("throws loudly when markers are missing", () => {
