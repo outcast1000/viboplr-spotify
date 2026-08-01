@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.16.0
+- **"Start Spotify radio" now starts playing immediately.** A song radio always
+  opens with its seed — the very track you right-clicked — so that track starts
+  straight away and the rest of the station fills in behind it. Previously you
+  waited out the whole search → station → scrape flow (15–25s) behind a loading
+  dialog before hearing anything.
+- While the station is still loading, the playlist panel shows a "Filling in the
+  rest…" row, and a notification confirms the track count once it lands. If the
+  station can't be loaded, whatever is playing keeps playing and a notification
+  explains why.
+- Start a different radio (or anything else) while a station is still loading and
+  the old one is discarded instead of being appended to what you switched to.
+- Requires a Viboplr version with the backfill playback API; on older versions
+  the action keeps its previous behaviour (loading dialog, then play).
+
 ## v1.15.0
 - New **"Start Spotify radio"** action on the right-click menu of any track,
   anywhere in the app (library, queue, playlist, plugin views, search results).
