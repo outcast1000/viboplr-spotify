@@ -2815,7 +2815,7 @@ function activate(api) {
     // so no tailErrorMessage — otherwise the user would get two toasts.
     if (api.playback && typeof api.playback.playWithBackfill === "function") {
       api.ui.showNotification("Spotify radio · “" + seedTitle + "” — filling in the station…");
-      api.playback.playWithBackfill({
+      var backfill = api.playback.playWithBackfill({
         head: [{ title: seedTitle, artist_name: seedArtist || null }],
         context: context,
         resolveTail: function () {
@@ -2825,7 +2825,6 @@ function activate(api) {
               api.ui.showNotification("Couldn't fill in the Spotify radio for “" + seedTitle + "”. The track wasn't found or Spotify's page changed.");
               return [];
             }
-            api.ui.showNotification("Spotify radio · " + (rest.length + 1) + " tracks.");
             return toPluginTracks(rest);
           }, function (e) {
             var m = (e && e.message) || String(e);
@@ -2837,6 +2836,15 @@ function activate(api) {
           });
         },
       });
+      // Announce the station from what the host actually appended, not from what
+      // we scraped: a tail that lands after the user has played something else
+      // is discarded, and claiming "N tracks" then would be a lie. Zero covers
+      // that case and the failures already reported above, so it stays quiet.
+      if (backfill && typeof backfill.then === "function") {
+        backfill.then(function (appended) {
+          if (appended > 0) api.ui.showNotification("Spotify radio · " + (appended + 1) + " tracks.");
+        }, function (e) { console.error("startSpotifyRadio: backfill result failed:", e); });
+      }
       return Promise.resolve();
     }
 
