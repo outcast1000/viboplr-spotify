@@ -2694,39 +2694,25 @@ function activate(api) {
   // radio page (it isn't a real playlist).
   var RADIO_SCRAPE_ID = "radio-station";
 
-  function startSpotifyRadio(seedTitle, seedArtist) {
-    if (!seedTitle) {
-      api.ui.showNotification("Can't start radio: this track has no title.");
-      return Promise.resolve();
-    }
-    var query = seedArtist ? (seedTitle + " " + seedArtist) : seedTitle;
-    var visible = !!state.showBrowserOnRefresh;
-
-    // Show the host's blocking loading modal for the whole flow (search + nav +
-    // radio + scrape can take 15–25s), unless one is already up (a concurrent
-    // action — withSpotifyWindow will reject the second open anyway).
-    var showedModal = false;
-    if (!loadingModalActive) {
-      loadingModalActive = true;
-      showedModal = true;
-      api.ui.requestAction("show-loading", { message: "Starting Spotify radio for “" + seedTitle + "”…" });
-    }
-    function hideModal() {
-      if (showedModal) { loadingModalActive = false; showedModal = false; api.ui.requestAction("hide-loading", {}); }
-    }
-
+  // Resolve a station's tracklist: search the seed → open its "Go to song radio"
+  // page → scrape the rows. Resolves `{ tracks, seedId }` — `seedId` is the
+  // Spotify id Spotify itself matched for the seed, which lets the caller
+  // recognise the station's opening row (song radio always leads with the seed)
+  // by id rather than by fuzzy title comparison.
+  function scrapeRadioTracks(query, visible) {
     return withSpotifyWindow({ url: searchTracksUrl(query), visible: visible }, function (h, ctx) {
       return new Promise(function (resolve) {
         var gen = ctx.gen;
         var phase = "search"; // search -> go-radio -> scrape
         var settled = false;
         var timer = null;
+        var seedId = null;
 
         function done(tracks) {
           if (settled) return;
           settled = true;
           if (timer) { clearTimeout(timer); timer = null; }
-          resolve(tracks || []);
+          resolve({ tracks: tracks || [], seedId: seedId });
         }
         function armTimeout(ms, label) {
           if (timer) clearTimeout(timer);
@@ -2748,6 +2734,7 @@ function activate(api) {
               return;
             }
             plog("info", "radio", "seed track: " + (msg.data.name || "?") + " — " + (msg.data.artist || "?"));
+            seedId = msg.data.trackId;
             phase = "go-radio";
             h.eval(scriptNavigateTrackPage(msg.data.trackId));
             setTimeout(function () {
@@ -2782,7 +2769,7 @@ function activate(api) {
             done(msg.data.tracks || []);
             return;
           }
-          // "tracks-progress" is ignored — the loading modal covers the wait.
+          // "tracks-progress" is ignored — nothing consumes partial rows.
         });
 
         // Kick off: (re)assert the search page (login may have redirected), then
@@ -2794,17 +2781,88 @@ function activate(api) {
           armTimeout(20000, "seed search");
         }, 4000);
       });
-    }).then(function (tracks) {
+    });
+  }
+
+  // Drop the station's opening row when it IS the seed (matched by Spotify id),
+  // since the caller has already started playing that track. Compared by id, so
+  // a scraped title that reads differently from the app-side one ("… -
+  // Remastered", a different artist rendering) can't cause a double-play.
+  function stripSeedRow(res) {
+    var tracks = res.tracks || [];
+    if (res.seedId && tracks.length > 0 && tracks[0].spotifyId === res.seedId) {
+      return tracks.slice(1);
+    }
+    return tracks;
+  }
+
+  function startSpotifyRadio(seedTitle, seedArtist) {
+    if (!seedTitle) {
+      api.ui.showNotification("Can't start radio: this track has no title.");
+      return Promise.resolve();
+    }
+    var query = seedArtist ? (seedTitle + " " + seedArtist) : seedTitle;
+    var visible = !!state.showBrowserOnRefresh;
+    var context = { name: "Spotify radio · " + seedTitle, source: "radio" };
+
+    // A song radio always opens with its seed — and the seed here is the track
+    // the user right-clicked, known before any scraping starts. So play it
+    // straight away and let the station fill in behind the music, instead of
+    // holding a modal across the whole search → radio → scrape flow (15–25s).
+    // The host owns the staleness guard: if the user plays something else while
+    // we scrape, our tail is discarded rather than spliced into their queue.
+    // All failure messaging stays here (we can tell "busy" from "page changed"),
+    // so no tailErrorMessage — otherwise the user would get two toasts.
+    if (api.playback && typeof api.playback.playWithBackfill === "function") {
+      api.ui.showNotification("Spotify radio · “" + seedTitle + "” — filling in the station…");
+      api.playback.playWithBackfill({
+        head: [{ title: seedTitle, artist_name: seedArtist || null }],
+        context: context,
+        resolveTail: function () {
+          return scrapeRadioTracks(query, visible).then(function (res) {
+            var rest = stripSeedRow(res);
+            if (rest.length === 0) {
+              api.ui.showNotification("Couldn't fill in the Spotify radio for “" + seedTitle + "”. The track wasn't found or Spotify's page changed.");
+              return [];
+            }
+            api.ui.showNotification("Spotify radio · " + (rest.length + 1) + " tracks.");
+            return toPluginTracks(rest);
+          }, function (e) {
+            var m = (e && e.message) || String(e);
+            api.ui.showNotification(m.indexOf("busy") !== -1
+              ? "Spotify is busy — the radio couldn't be filled in."
+              : "Couldn't fill in the Spotify radio.");
+            console.error("startSpotifyRadio backfill failed:", e);
+            return [];
+          });
+        },
+      });
+      return Promise.resolve();
+    }
+
+    // Older host without playWithBackfill: block on the whole flow behind the
+    // loading modal, unless one is already up (a concurrent action —
+    // withSpotifyWindow will reject the second open anyway).
+    var showedModal = false;
+    if (!loadingModalActive) {
+      loadingModalActive = true;
+      showedModal = true;
+      api.ui.requestAction("show-loading", { message: "Starting Spotify radio for “" + seedTitle + "”…" });
+    }
+    function hideModal() {
+      if (showedModal) { loadingModalActive = false; showedModal = false; api.ui.requestAction("hide-loading", {}); }
+    }
+
+    return scrapeRadioTracks(query, visible).then(function (res) {
       hideModal();
-      if (!tracks || tracks.length === 0) {
+      var tracks = res.tracks || [];
+      if (tracks.length === 0) {
         api.ui.showNotification("Couldn't start a Spotify radio for “" + seedTitle + "”. The track wasn't found or Spotify's page changed.");
         return;
       }
       // Replace the queue and play the radio (per the "start radio" semantics).
-      api.playback.playTracks(toPluginTracks(tracks), 0, {
-        name: "Spotify radio · " + seedTitle,
-        source: "radio",
-      });
+      // The seed row is kept here — nothing has played yet.
+      api.playback.playTracks(toPluginTracks(tracks), 0, context);
       api.ui.showNotification("Started Spotify radio · " + tracks.length + " tracks.");
     }, function (e) {
       hideModal();

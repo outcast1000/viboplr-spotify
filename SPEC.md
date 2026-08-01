@@ -146,9 +146,9 @@ A **universal track context-menu item** ("Start Spotify radio", registered via
 `api.contextMenu.registerItem` on the `track` target) starts a Spotify radio
 seeded from any track in the app. The app-side `PluginContextMenuTarget` carries
 only `title` + `artistName` (no Spotify id), so the flow searches for the seed
-first. It runs inside `withSpotifyWindow` (so it inherits the login flow, the
-single-window gate, and the generation guard) as a small state machine driven by
-the message bridge:
+first. The scrape (`scrapeRadioTracks`) runs inside `withSpotifyWindow` (so it
+inherits the login flow, the single-window gate, and the generation guard) as a
+small state machine driven by the message bridge:
 
 1. **search → seed** — open at `searchTracksUrl(title + " " + artist)`
    (`/search/{q}/tracks`), inject `scriptSearchTopTrack`, take the first track
@@ -159,12 +159,32 @@ the message bridge:
 3. **scrape** — after the page settles, reuse `scriptScrollThenScrape` (keyed by
    the synthetic id `radio-station`) to scrape the radio tracklist.
 
-The scraped tracks **replace the queue and play** via
-`api.playback.playTracks(tracks, 0, { name: "Spotify radio · {title}", source: "radio" })`.
-Progress is covered by the host loading modal; each failure path (seed not found,
-radio menu item missing, empty tracklist, `withSpotifyWindow` busy-reject) shows a
-notification and leaves the queue untouched. Each step has its own timeout and the
-generation guard aborts stale work exactly like `ensureTracks`.
+`scrapeRadioTracks` resolves `{ tracks, seedId }` — `seedId` being the Spotify id
+Spotify itself matched in step 1.
+
+**The seed plays before the scrape finishes.** A song radio always opens with its
+seed, and the seed here is the track the user right-clicked — known before any
+scraping starts. So on hosts that expose it, the flow calls
+`api.playback.playWithBackfill({ head: [seed], context, resolveTail })`: the seed
+starts immediately (metadata-only — the host's stream-resolver chain resolves it
+on play, as it would have for track 1 anyway) under the
+`{ name: "Spotify radio · {title}", source: "radio" }` banner, and the scraped
+station is appended when it lands, 15–25s later. No loading modal. The host owns
+the staleness guard, so a station that resolves after the user has played
+something else is discarded instead of spliced into their queue. `stripSeedRow`
+drops the station's opening row when its Spotify id equals `seedId`, so the seed
+can't play twice even when the scraped title reads differently from the app-side
+one. Failure messaging lives in the plugin (it can distinguish
+`withSpotifyWindow` busy-reject from "page changed"), so no `tailErrorMessage` is
+passed — otherwise the user would get two toasts.
+
+Hosts without `playWithBackfill` keep the original behaviour: the whole flow runs
+behind the loading modal, then the scraped tracks (seed row included) replace the
+queue via `api.playback.playTracks(tracks, 0, context)`. Every failure path (seed
+not found, radio menu item missing, empty tracklist, busy-reject) shows a
+notification; on the legacy path the queue is left untouched, on the backfill path
+the seed keeps playing. Each step has its own timeout and the generation guard
+aborts stale work exactly like `ensureTracks`.
 
 Because the search-results DOM and the "Go to song radio" menu item are the two
 selector-fragile bits, `npm run verify:radio [seed query]` drives this exact flow
@@ -300,7 +320,7 @@ on cards and the detail header. A failed track scrape is retried up to twice
 ### Track Actions (universal context menu)
 | Action | Context | Behavior |
 |--------|---------|----------|
-| `start-spotify-radio` | Any track's right-click menu (library / queue / playlist / plugin / search) | `startSpotifyRadio(title, artist)` — search → go-to-radio → scrape → replace queue and play (see *Start Spotify radio*) |
+| `start-spotify-radio` | Any track’s right-click menu (library / queue / playlist / plugin / search) | `startSpotifyRadio(title, artist)` — plays the seed immediately, then search → go-to-radio → scrape → append the station (legacy hosts: scrape first, then replace the queue; see *Start Spotify radio*) |
 
 ## Injected Scripts
 
