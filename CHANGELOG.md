@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.16.1
+- **Fixed: "Start Spotify radio" reported "the track wasn't found" on anything
+  but a fast connection.** Each step of the flow waited a flat four seconds for
+  Spotify's page to render and then gave up; every step now waits for the page
+  it needs (up to ~25s) and re-arms itself while a page is still loading. The
+  flow also stopped reloading the search page it had just opened, which was
+  throwing away a rendered page and restarting the clock.
+- Fixed: the station is no longer scraped off the seed's track page. The track
+  page has a track list of its own (the artist's popular songs), so a slow
+  transition could produce a plausible-looking wrong station.
+- The radio window no longer lets Spotify's page hand off to the Spotify desktop
+  app mid-scrape. The block itself lives in the host, so this one needs a Viboplr
+  build newer than 1.0.14.
+- Failure messages now distinguish "signed out" from "no results", and the log
+  says which step timed out.
+
 ## v1.16.0
 - **"Start Spotify radio" now starts playing immediately.** A song radio always
   opens with its seed — the very track you right-clicked — so that track starts

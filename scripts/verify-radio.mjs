@@ -117,11 +117,19 @@ async function main() {
     const bridge = await installBridge(page);
 
     // --- Login ---
+    // Re-check until the page has had a real chance to render. A single check
+    // after a fixed settle reports "not logged in" for a session that is fine
+    // and merely slow — the same mistake that broke the radio flow itself.
     await page.goto(S.MUSIC_CHIP_URL, { waitUntil: "domcontentloaded" });
-    await sleep(OPTS.settleMs);
-    await bridge.ensure();
-    await evalIn(page, S.SCRIPT_CHECK_LOGIN);
-    let login = await bridge.wait("login-check");
+    let login = { loggedIn: false };
+    for (const deadline = Date.now() + OPTS.stepTimeoutMs; Date.now() < deadline; ) {
+      await sleep(1500);
+      await bridge.ensure();
+      await evalIn(page, S.SCRIPT_CHECK_LOGIN);
+      login = await bridge.wait("login-check").catch(() => ({ loggedIn: false }));
+      if (login.loggedIn) break;
+      if (OPTS.debug) console.log("  [login] not yet:", JSON.stringify(login.signals || {}));
+    }
     if (!login.loggedIn) {
       await prompt("Not logged in. Log into Spotify in the window, then press Enter…");
       await bridge.ensure();
@@ -134,8 +142,9 @@ async function main() {
     const failures = [];
 
     // --- Step 1: search -> seed track ---
+    // No settle sleep: the script polls for results itself, which is the
+    // behavior the host relies on (a fixed wait is what broke it in the app).
     await page.goto(S.searchTracksUrl(QUERY), { waitUntil: "domcontentloaded" });
-    await sleep(OPTS.settleMs);
     await bridge.ensure();
     await evalIn(page, S.scriptSearchTopTrack(1));
     const seed = await bridge.wait("radio-seed").catch((e) => ({ error: e.message }));
@@ -150,9 +159,9 @@ async function main() {
     let go = null;
     if (seed && seed.trackId) {
       await evalIn(page, S.scriptNavigateTrackPage(seed.trackId));
-      await sleep(OPTS.settleMs);
+      await page.waitForURL(/\/track\//, { timeout: OPTS.stepTimeoutMs }).catch(() => {});
       await bridge.ensure();
-      await evalIn(page, S.scriptGoToRadio(1));
+      await evalIn(page, S.scriptGoToRadio(1, seed.trackId));
       go = await bridge.wait("radio-go").catch((e) => ({ error: e.message }));
       if (!go || go.error || !go.ok) {
         failures.push(`go-to-radio failed: ${go && go.error ? go.error : "not ok"}`);
@@ -163,10 +172,23 @@ async function main() {
       }
     }
 
+    // --- Step 2b: wait for the station page to actually open ---
+    let station = null;
+    if (go && go.ok) {
+      await bridge.ensure();
+      await evalIn(page, S.scriptWaitForStation(1, seed.trackId));
+      station = await bridge.wait("radio-station").catch((e) => ({ error: e.message }));
+      if (!station || station.error || !station.ok) {
+        failures.push(`station page never opened: ${station && station.error ? station.error : "not ok"}`);
+        console.log("✗ station:", JSON.stringify(station));
+      } else {
+        console.log(`✓ station page: ${station.url}`);
+      }
+    }
+
     // --- Step 3: scrape the radio tracklist ---
     let tracks = [];
-    if (go && go.ok) {
-      await sleep(OPTS.settleMs);
+    if (station && station.ok) {
       await bridge.ensure();
       await evalIn(page, S.scriptScrollThenScrape("radio-station", 1, { maxSteps: OPTS.maxSteps }));
       const data = await bridge.wait("tracks").catch((e) => ({ error: e.message, tracks: [] }));

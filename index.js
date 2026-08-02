@@ -1874,6 +1874,47 @@ function activate(api) {
   // scrape the resulting tracklist (reusing scriptScrollThenScrape's row parser).
   // These builders live inside the SCRAPE-SCRIPTS markers so scripts/verify-radio
   // can exercise them against the live Spotify DOM without the host app.
+  //
+  // Every step polls the page for the thing it needs instead of assuming a fixed
+  // settle time. Spotify's SPA renders when it renders — on a slow connection a
+  // four-second wait reports "no track results" for a page that was still
+  // loading, which is exactly how this flow broke. Each script also runs at most
+  // once per document (RUN_ONCE), so the host can re-fire it until it lands on a
+  // document that survives: a script eval'd while a navigation is committing is
+  // wiped with the old page and would otherwise never answer.
+
+  // Poll `probe()` until it returns something truthy or the budget expires, then
+  // call `done` with the result (or null on expiry).
+  var POLL_HELPER =
+    'function _poll(probe,done,budgetMs){' +
+      'var _t0=Date.now();' +
+      'function tick(){' +
+        'var r=null;try{r=probe()}catch(e){r=null}' +
+        'if(r){done(r);return}' +
+        'if(Date.now()-_t0>=budgetMs){done(null);return}' +
+        'setTimeout(tick,400);' +
+      '}' +
+      'tick();' +
+    '}';
+
+  // Guard a script against running twice in the same document. `key` is unique
+  // per step, so a re-fire while the step is already polling is a no-op, but the
+  // same script on a freshly loaded document runs normally.
+  function runOnce(key) {
+    return 'if(window.__viboplrRadio_' + key + ')return;window.__viboplrRadio_' + key + '=1;';
+  }
+
+  // Is the document showing exactly the seed's track page? Matched as the whole
+  // path (minus Spotify's optional /intl-xx prefix and a trailing slash), not as
+  // a substring: a song radio lives at /station/track/{id}, which *contains* the
+  // track path, so "still on the track page?" and "station open?" would both be
+  // true under a naive indexOf.
+  var TRACK_PAGE_HELPER =
+    'function _isTrackPage(id){' +
+      'var p=location.pathname.replace(/^\\/intl-[^\\/]+/,"");' +
+      'if(p.charAt(p.length-1)==="/")p=p.slice(0,-1);' +
+      'return p==="/track/"+id;' +
+    '}';
 
   var SEARCH_BASE = "https://open.spotify.com/search/";
   // The "/tracks" facet renders a full song tracklist (not the mixed top-results
@@ -1889,30 +1930,42 @@ function activate(api) {
     '})()';
   }
 
-  // On the search "/tracks" page: pick the first real track link and post its
-  // Spotify id + name + artist back as a "radio-seed" message (or an error).
-  function scriptSearchTopTrack(gen) {
+  // On the search "/tracks" page: wait for results to render, pick the first real
+  // track link and post its Spotify id + name + artist back as a "radio-seed"
+  // message (or an error once the budget is spent).
+  function scriptSearchTopTrack(gen, budgetMs) {
+    var budget = budgetMs || 25000;
     return '(function(){try{' +
-      DBG_HELPER +
+      runOnce("seed") +
+      DBG_HELPER + POLL_HELPER +
       'var _gen=' + gen + ';' +
-      'var scope=document.querySelector("main")||document;' +
-      'var links=scope.querySelectorAll("a[href*=\\"/track/\\"]");' +
-      '_dbg("radio","search track links",{count:links.length,url:location.href});' +
-      'var picked=null;' +
-      'for(var i=0;i<links.length;i++){' +
-        'var href=links[i].getAttribute("href")||"";' +
-        'var rest=href.split("/track/")[1];' +
-        'if(!rest)continue;' +
-        'var id=rest.split("?")[0].split("/")[0];' +
-        'if(id){picked={id:id,el:links[i]};break;}' +
+      '_dbg("radio","waiting for search results",{url:location.href,budgetMs:' + budget + '});' +
+      'function probe(){' +
+        'var scope=document.querySelector("main")||document;' +
+        'var links=scope.querySelectorAll("a[href*=\\"/track/\\"]");' +
+        'for(var i=0;i<links.length;i++){' +
+          'var href=links[i].getAttribute("href")||"";' +
+          'var rest=href.split("/track/")[1];' +
+          'if(!rest)continue;' +
+          'var id=rest.split("?")[0].split("/")[0];' +
+          'if(id)return{id:id,el:links[i]};' +
+        '}' +
+        'return null;' +
       '}' +
-      'if(!picked){window.__viboplr.send("radio-seed",{error:"no track results",url:location.href,gen:_gen});return;}' +
-      'var name=(picked.el.textContent||"").trim();' +
-      'var row=(picked.el.closest?picked.el.closest("[role=\\"row\\"]"):null)||picked.el.parentElement;' +
-      'var artist="";' +
-      'if(row){var a=row.querySelector("a[href*=\\"/artist/\\"]");if(a)artist=(a.textContent||"").trim();}' +
-      '_dbg("radio","picked seed",{id:picked.id,name:name,artist:artist});' +
-      'window.__viboplr.send("radio-seed",{trackId:picked.id,name:name,artist:artist,gen:_gen});' +
+      '_poll(probe,function(picked){' +
+        'if(!picked){' +
+          'var loggedOut=!!document.querySelector("[data-testid=\\"login-button\\"], [data-testid=\\"signup-button\\"]");' +
+          '_dbg("radio","no track results",{url:location.href,loggedOut:loggedOut});' +
+          'window.__viboplr.send("radio-seed",{error:loggedOut?"signed out":"no track results",loggedOut:loggedOut,url:location.href,gen:_gen});' +
+          'return;' +
+        '}' +
+        'var name=(picked.el.textContent||"").trim();' +
+        'var row=(picked.el.closest?picked.el.closest("[role=\\"row\\"]"):null)||picked.el.parentElement;' +
+        'var artist="";' +
+        'if(row){var a=row.querySelector("a[href*=\\"/artist/\\"]");if(a)artist=(a.textContent||"").trim();}' +
+        '_dbg("radio","picked seed",{id:picked.id,name:name,artist:artist});' +
+        'window.__viboplr.send("radio-seed",{trackId:picked.id,name:name,artist:artist,gen:_gen});' +
+      '},' + budget + ');' +
     '}catch(e){try{window.__viboplr.send("radio-seed",{error:"search script error: "+e,gen:' + gen + '})}catch(_){}}})()';
   }
 
@@ -1923,41 +1976,81 @@ function activate(api) {
     '})()';
   }
 
-  // On a track page: open the "..." more menu and click "Go to song radio",
-  // which navigates to the radio tracklist page. Posts "radio-go" with {ok} or
-  // {error, menuItems} (the collected item labels help diagnose a selector drift).
-  function scriptGoToRadio(gen) {
+  // On the seed's track page: open the "..." more menu and click "Go to song
+  // radio", which navigates to the radio tracklist page. Posts "radio-go" with
+  // {ok} or {error, menuItems} (the collected item labels help diagnose a
+  // selector drift).
+  //
+  // Bails silently unless the document really is the seed's track page: the host
+  // re-fires this until a navigation sticks, and the search page it starts from
+  // has "More options" buttons of its own (one per row) that would open some
+  // other track's station.
+  function scriptGoToRadio(gen, trackId, budgetMs) {
+    var budget = budgetMs || 25000;
     return '(function(){try{' +
-      DBG_HELPER +
+      TRACK_PAGE_HELPER +
+      'if(!_isTrackPage(' + JSON.stringify(String(trackId)) + '))return;' +
+      runOnce("go") +
+      DBG_HELPER + POLL_HELPER +
       'var _gen=' + gen + ';' +
       'function findMore(){' +
         'return document.querySelector("button[data-testid=\\"more-button\\"]")' +
           '||document.querySelector("main button[aria-label^=\\"More options\\"]")' +
           '||document.querySelector("button[aria-label^=\\"More options\\"]");' +
       '}' +
-      'var more=findMore();' +
-      'if(!more){window.__viboplr.send("radio-go",{error:"more button not found",url:location.href,gen:_gen});return;}' +
-      '_dbg("radio","clicking more button");' +
-      'more.click();' +
-      'var tries=0;var MAX=14;' +
-      'function clickRadio(){' +
-        'tries++;' +
-        'var items=document.querySelectorAll("[role=\\"menuitem\\"]");' +
-        'var target=null;var labels=[];' +
-        'for(var i=0;i<items.length;i++){var t=(items[i].textContent||"").trim();labels.push(t);' +
-          'if(/radio/i.test(t)){target=items[i];break;}}' +
-        'if(target){' +
+      '_poll(findMore,function(more){' +
+        'if(!more){' +
+          '_dbg("radio","more button not found",{url:location.href});' +
+          'window.__viboplr.send("radio-go",{error:"more button not found",url:location.href,gen:_gen});' +
+          'return;' +
+        '}' +
+        '_dbg("radio","clicking more button");' +
+        'more.click();' +
+        'var labels=[];' +
+        '_poll(function(){' +
+          'var items=document.querySelectorAll("[role=\\"menuitem\\"]");' +
+          'labels=[];' +
+          'for(var i=0;i<items.length;i++){var t=(items[i].textContent||"").trim();labels.push(t);' +
+            'if(/radio/i.test(t))return items[i];}' +
+          'return null;' +
+        '},function(target){' +
+          'if(!target){' +
+            '_dbg("radio","radio menu item not found",{menuItems:labels});' +
+            'window.__viboplr.send("radio-go",{error:"radio menu item not found",menuItems:labels,gen:_gen});' +
+            'return;' +
+          '}' +
           '_dbg("radio","clicking radio menu item",{label:(target.textContent||"").trim()});' +
           'target.click();' +
           'window.__viboplr.send("radio-go",{ok:true,label:(target.textContent||"").trim(),gen:_gen});' +
+        '},8000);' +
+      '},' + budget + ');' +
+    '}catch(e){try{window.__viboplr.send("radio-go",{error:"radio script error: "+e,gen:' + gen + '})}catch(_){}}})()';
+  }
+
+  // After the menu click: wait until the page has actually left the seed's track
+  // page for the station, and report where it landed. Without this the scrape can
+  // run against the still-showing track page — which has its own [role="row"]
+  // list (the artist's popular tracks) and would be scraped as if it were the
+  // station.
+  function scriptWaitForStation(gen, trackId, budgetMs) {
+    var budget = budgetMs || 25000;
+    return '(function(){try{' +
+      runOnce("station") +
+      DBG_HELPER + POLL_HELPER + TRACK_PAGE_HELPER +
+      'var _gen=' + gen + ';' +
+      'var _seed=' + JSON.stringify(String(trackId)) + ';' +
+      '_poll(function(){' +
+        'return _isTrackPage(_seed)?null:location.href;' +
+      '},function(url){' +
+        'if(!url){' +
+          '_dbg("radio","still on the track page",{url:location.href});' +
+          'window.__viboplr.send("radio-station",{error:"radio page never opened",url:location.href,gen:_gen});' +
           'return;' +
         '}' +
-        'if(tries<MAX){setTimeout(clickRadio,250);return;}' +
-        '_dbg("radio","radio menu item not found",{menuItems:labels});' +
-        'window.__viboplr.send("radio-go",{error:"radio menu item not found",menuItems:labels,gen:_gen});' +
-      '}' +
-      'setTimeout(clickRadio,350);' +
-    '}catch(e){try{window.__viboplr.send("radio-go",{error:"radio script error: "+e,gen:' + gen + '})}catch(_){}}})()';
+        '_dbg("radio","station page open",{url:url});' +
+        'window.__viboplr.send("radio-station",{ok:true,url:url,gen:_gen});' +
+      '},' + budget + ');' +
+    '}catch(e){try{window.__viboplr.send("radio-station",{error:"station wait error: "+e,gen:' + gen + '})}catch(_){}}})()';
   }
 
   // <<< SCRAPE-SCRIPTS-END
@@ -2703,14 +2796,40 @@ function activate(api) {
     return withSpotifyWindow({ url: searchTracksUrl(query), visible: visible }, function (h, ctx) {
       return new Promise(function (resolve) {
         var gen = ctx.gen;
-        var phase = "search"; // search -> go-radio -> scrape
+        var phase = "search"; // search -> go-radio -> station -> scrape
         var settled = false;
         var timer = null;
+        var pumpTimer = null;
         var seedId = null;
+
+        function stopPump() {
+          if (pumpTimer) { clearInterval(pumpTimer); pumpTimer = null; }
+        }
+        // Fire a step's script and keep re-firing it until the step answers. A
+        // script eval'd while a navigation is still committing dies with the old
+        // document and would never reply, so one shot means waiting out the step
+        // timeout for nothing. The scripts run at most once per document and
+        // check they're on the page they belong to, so a re-fire either lands on
+        // a document that hasn't run it yet or does nothing.
+        function pump(script, ms, label) {
+          stopPump();
+          h.eval(script);
+          var refires = 0;
+          pumpTimer = setInterval(function () {
+            if (ctx.isStale() || settled) { stopPump(); return; }
+            refires++;
+            // One line, not one per tick: a re-fire is expected while a page
+            // loads (the script no-ops on a document that already has it), so
+            // only the fact that we started re-firing is worth the log.
+            if (refires === 1) plog("info", "radio", label + ": page still settling, re-arming the script");
+            h.eval(script);
+          }, ms || 3000);
+        }
 
         function done(tracks) {
           if (settled) return;
           settled = true;
+          stopPump();
           if (timer) { clearTimeout(timer); timer = null; }
           resolve({ tracks: tracks || [], seedId: seedId });
         }
@@ -2727,6 +2846,7 @@ function activate(api) {
           if (msg.data && msg.data.gen != null && msg.data.gen !== gen) return;
 
           if (msg.type === "radio-seed" && phase === "search") {
+            stopPump();
             if (timer) { clearTimeout(timer); timer = null; }
             if (!msg.data || msg.data.error || !msg.data.trackId) {
               plog("warn", "radio", "seed search failed", msg.data);
@@ -2737,29 +2857,43 @@ function activate(api) {
             seedId = msg.data.trackId;
             phase = "go-radio";
             h.eval(scriptNavigateTrackPage(msg.data.trackId));
-            setTimeout(function () {
-              if (ctx.isStale() || settled) { done([]); return; }
-              h.eval(scriptGoToRadio(gen));
-              armTimeout(20000, "go-radio");
-            }, 4000);
+            // The go-radio script waits for the track page itself, and the pump
+            // covers the window where the navigation is still in flight.
+            pump(scriptGoToRadio(gen, seedId), 3000, "go-radio");
+            armTimeout(45000, "go-radio");
             return;
           }
 
           if (msg.type === "radio-go" && phase === "go-radio") {
+            stopPump();
             if (timer) { clearTimeout(timer); timer = null; }
             if (!msg.data || msg.data.error || !msg.data.ok) {
               plog("warn", "radio", "could not open song radio", msg.data);
               done([]);
               return;
             }
+            // The click navigates to the station page. Wait for that to actually
+            // happen before scraping — the track page underneath has rows of its
+            // own and would scrape as a plausible-looking wrong tracklist.
+            phase = "station";
+            pump(scriptWaitForStation(gen, seedId), 3000, "station wait");
+            armTimeout(30000, "station wait");
+            return;
+          }
+
+          if (msg.type === "radio-station" && phase === "station") {
+            stopPump();
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (!msg.data || msg.data.error || !msg.data.ok) {
+              plog("warn", "radio", "song radio page never opened", msg.data);
+              done([]);
+              return;
+            }
             phase = "scrape";
-            // The click navigates to the radio page; let it settle, then scrape
-            // its tracklist with the shared row parser (synthetic playlist id).
-            setTimeout(function () {
-              if (ctx.isStale() || settled) { done([]); return; }
-              h.eval(scriptScrollThenScrape(RADIO_SCRAPE_ID, gen, { maxSteps: 40 }));
-              armTimeout(45000, "radio scrape");
-            }, 4500);
+            // Scrape the station's tracklist with the shared row parser
+            // (synthetic playlist id). It waits for its own content.
+            h.eval(scriptScrollThenScrape(RADIO_SCRAPE_ID, gen, { maxSteps: 40 }));
+            armTimeout(60000, "radio scrape");
             return;
           }
 
@@ -2772,14 +2906,16 @@ function activate(api) {
           // "tracks-progress" is ignored — nothing consumes partial rows.
         });
 
-        // Kick off: (re)assert the search page (login may have redirected), then
-        // grab the seed track.
-        h.eval(scriptNavigateSearch(query));
-        setTimeout(function () {
-          if (ctx.isStale() || settled) { done([]); return; }
-          h.eval(scriptSearchTopTrack(gen));
-          armTimeout(20000, "seed search");
-        }, 4000);
+        // Kick off. The window was opened AT the search URL, so in the normal
+        // case the page is already there and loading — re-navigating would throw
+        // away a page that had just finished rendering and restart the clock.
+        // Only navigate when login bounced us somewhere else.
+        if (!ctx.loginUrl || ctx.loginUrl.indexOf("/search/") === -1) {
+          plog("info", "radio", "not on the search page, navigating", { at: ctx.loginUrl });
+          h.eval(scriptNavigateSearch(query));
+        }
+        pump(scriptSearchTopTrack(gen), 3000, "seed search");
+        armTimeout(45000, "seed search");
       });
     });
   }

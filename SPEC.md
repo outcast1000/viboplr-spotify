@@ -150,17 +150,39 @@ first. The scrape (`scrapeRadioTracks`) runs inside `withSpotifyWindow` (so it
 inherits the login flow, the single-window gate, and the generation guard) as a
 small state machine driven by the message bridge:
 
-1. **search → seed** — open at `searchTracksUrl(title + " " + artist)`
-   (`/search/{q}/tracks`), inject `scriptSearchTopTrack`, take the first track
-   row's Spotify id (`radio-seed`).
+1. **search → seed** — the window is opened at
+   `searchTracksUrl(title + " " + artist)` (`/search/{q}/tracks`), so the page is
+   already loading; it is only re-navigated when login bounced it elsewhere
+   (`ctx.loginUrl`). `scriptSearchTopTrack` takes the first track row's Spotify
+   id (`radio-seed`).
 2. **go-radio** — navigate to `/track/{id}`, inject `scriptGoToRadio` which
    clicks the `…` more menu's "Go to song radio" item (`radio-go`). That click
    navigates to the radio tracklist page.
-3. **scrape** — after the page settles, reuse `scriptScrollThenScrape` (keyed by
-   the synthetic id `radio-station`) to scrape the radio tracklist.
+3. **station** — `scriptWaitForStation` waits until the page has actually left
+   the seed's track page (`radio-station`). Skipping this would scrape the track
+   page's own `[role="row"]` list — the artist's popular tracks — as if it were
+   the station.
+4. **scrape** — reuse `scriptScrollThenScrape` (keyed by the synthetic id
+   `radio-station`) to scrape the radio tracklist.
+
+**Every step polls the page; none of them sleep for a fixed interval.** Spotify's
+SPA renders when it renders, and a fixed settle time reports "no track results"
+for a page that was merely slow (this is how v1.16.0 broke on a slow
+connection). Each script `_poll`s for what it needs (~25s budget) and each is
+guarded by `runOnce` + a page check, so the host can re-fire it every 3s ("pump")
+until it lands on a document that survives — a script eval'd while a navigation
+is committing dies with the old document and would otherwise never answer. Step
+timeouts are the real cap: 45s seed, 45s go-radio, 30s station, 60s scrape.
 
 `scrapeRadioTracks` resolves `{ tracks, seedId }` — `seedId` being the Spotify id
 Spotify itself matched in step 1.
+
+**Never navigate the window to a non-`http(s)` URL.** Spotify's page will hand
+off to the desktop app (`spotify:…`) given the chance, and a WKWebView that is
+allowed to navigate to an unsupported scheme passes it to LaunchServices — which
+is how a hidden scrape launched the Spotify app. The host blocks this centrally
+(`browse_window.rs::is_navigable`, in Viboplr builds after 1.0.14); the plugin's
+own navigations stay on `open.spotify.com`.
 
 **The seed plays before the scrape finishes.** A song radio always opens with its
 seed, and the seed here is the track the user right-clicked — known before any
@@ -331,9 +353,10 @@ on cards and the detail header. A failed track scrape is retried up to twice
 | `scriptNavigatePlaylist(id)` | Navigate to playlist page | Direct URL assignment |
 | `scriptScrollThenScrape(id, gen)` | Scroll + parse tracks (also reused for the radio tracklist) | `[role="row"]` inside `[data-testid="playlist-tracklist"]` |
 | `scriptNavigateSearch(query)` | Navigate to the `/search/{q}/tracks` page (radio seed) | direct URL assignment |
-| `scriptSearchTopTrack(gen)` | Pick the top track result → `radio-seed {trackId,name,artist}` | first `a[href*="/track/"]` in `main` |
+| `scriptSearchTopTrack(gen[, budgetMs])` | Poll for results, pick the top track → `radio-seed {trackId,name,artist}` (or `{error,loggedOut}`) | first `a[href*="/track/"]` in `main` |
 | `scriptNavigateTrackPage(id)` | Navigate to `/track/{id}` (radio seed) | direct URL assignment |
-| `scriptGoToRadio(gen)` | Open the `…` menu, click "Go to song radio" → `radio-go` | `button[data-testid="more-button"]` + `[role="menuitem"]` matching `/radio/i` |
+| `scriptGoToRadio(gen, trackId[, budgetMs])` | On the seed's track page only: poll for the `…` menu, click "Go to song radio" → `radio-go` | `button[data-testid="more-button"]` + `[role="menuitem"]` matching `/radio/i` |
+| `scriptWaitForStation(gen, trackId[, budgetMs])` | Wait until the page has left the seed's track page → `radio-station {url}` | `location.pathname` vs `/track/{id}` (exact, `/intl-xx` stripped — the station lives at `/station/track/{id}`) |
 | `SCRIPT_LOGIN_BANNER` | Inject "please sign in" banner when not logged in | fixed-position `<div>` prepended to `<html>` |
 | `SCRIPT_REMOVE_LOGIN_BANNER` | Remove the sign-in banner once logged in | by element id |
 

@@ -38,6 +38,7 @@ export function extractScripts(indexPath) {
     scriptSearchTopTrack: sandbox.scriptSearchTopTrack,
     scriptNavigateTrackPage: sandbox.scriptNavigateTrackPage,
     scriptGoToRadio: sandbox.scriptGoToRadio,
+    scriptWaitForStation: sandbox.scriptWaitForStation,
   };
 
   for (const [k, v] of Object.entries(out)) {
