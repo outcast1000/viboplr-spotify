@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.17.0
+- **Hi-res artwork.** Track images now cache at Spotify's 640px variant instead
+  of the 64px thumbnail the tracklist DOM serves — so album art no longer looks
+  blurry blown up in Now Playing. Known CDN size tokens (album art ids, mosaic
+  covers) are swapped at scrape and download time; if a 640px variant ever
+  fails to download, the original lower-res URL is retried as a fallback.
+- Playlist card covers and tracks-page covers get the same upgrade.
+- One-time migration: on first activation after updating, all playlists are
+  marked stale so their tracks re-scrape on next open/sync and artwork
+  re-downloads at 640px (same filenames, overwritten in place).
+
 ## v1.16.1
 - **Fixed: "Start Spotify radio" reported "the track wasn't found" on anything
   but a fast connection.** Each step of the flow waited a flat four seconds for

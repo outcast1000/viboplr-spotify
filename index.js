@@ -399,6 +399,41 @@ function activate(api) {
     return Promise.all(promises);
   }
 
+  // ---- Image resolution upgrade ----
+  // Spotify's CDN encodes the rendered size inside the URL: album art ids are
+  // ab67616d0000<sizeToken><32 hex> (4851 = 64px, 1e02 = 300px, b273 = 640px)
+  // and mosaic playlist covers are mosaic.scdn.co/<size>/... (60 / 300 / 640).
+  // The web app's tracklist rows serve the 64px variant, which looks terrible
+  // blown up in Now Playing — swap known low-res tokens for the 640px variant.
+  // Unrecognized URLs (pickasso covers, local paths, null) pass through as-is.
+  // Self-contained (no closure state) so scripts/image-url.test.mjs can extract
+  // and test them in isolation, like fillAlbumName.
+  function upgradeImageUrl(url) {
+    if (!url || url.indexOf("http") !== 0) return url;
+    return url
+      .replace("ab67616d00004851", "ab67616d0000b273")  // 64px album art -> 640px
+      .replace("ab67616d00001e02", "ab67616d0000b273")  // 300px album art -> 640px
+      .replace(/(mosaic\.scdn\.co\/)(?:60|300)\//, "$1640/");
+  }
+
+  // Last-resort fallback when the 640px variant fails to download — the size
+  // tokens are scraped knowledge, not an API contract. Falls back to the
+  // variants the web app itself serves (64px album art / 300px mosaic).
+  function downgradeImageUrl(url) {
+    if (!url || url.indexOf("http") !== 0) return url;
+    return url
+      .replace("ab67616d0000b273", "ab67616d00004851")
+      .replace(/(mosaic\.scdn\.co\/)640\//, "$1300/");
+  }
+
+  function upgradeTrackImages(tracks) {
+    if (!tracks) return tracks;
+    for (var i = 0; i < tracks.length; i++) {
+      if (tracks[i] && tracks[i].imageUrl) tracks[i].imageUrl = upgradeImageUrl(tracks[i].imageUrl);
+    }
+    return tracks;
+  }
+
   // Download cover + track images into each playlist's directory, updating
   // track.imageUrl / pl.imageUrl to absolute local paths. Idempotent — skips
   // fetches for images already local.
@@ -410,9 +445,16 @@ function activate(api) {
         var dir = playlistDir(pl);
         if (pl.imageUrl && pl.imageUrl.indexOf("http") === 0) {
           stats.covers++;
-          var coverUrl = pl.imageUrl;
+          // Upgrade here too (not just at ingestion) so http URLs persisted by
+          // older builds get the 640px variant without needing a re-scrape.
+          var coverUrl = upgradeImageUrl(pl.imageUrl);
           promises.push(
-            api.storage.files.download(dir.concat(["cover.jpg"]), coverUrl).then(function (path) {
+            api.storage.files.download(dir.concat(["cover.jpg"]), coverUrl).catch(function (e) {
+              var fb = downgradeImageUrl(coverUrl);
+              if (fb === coverUrl) throw e;
+              api.log("warn", "640px cover failed for " + pl.name + " (" + e + "), retrying lower-res variant");
+              return api.storage.files.download(dir.concat(["cover.jpg"]), fb);
+            }).then(function (path) {
               // Bump coverVersion so the WebView refetches the file even though
               // the on-disk path is unchanged. Without this, weekly-rotating
               // covers (Discover Weekly) keep showing last week's image.
@@ -441,11 +483,19 @@ function activate(api) {
           (function (track) {
             if (track.imageUrl && track.imageUrl.indexOf("http") === 0) {
               stats.tracks++;
-              var trackUrl = track.imageUrl;
+              var trackUrl = upgradeImageUrl(track.imageUrl);
               var filename = "track-" + djb2Hash(track.name + " - " + track.artist) + ".jpg";
               promises.push(
-                api.storage.files.download(dir.concat([filename]), trackUrl).then(function (path) {
-                  track.imageUrl = path;
+                api.storage.files.download(dir.concat([filename]), trackUrl).catch(function (e) {
+                  var fb = downgradeImageUrl(trackUrl);
+                  if (fb === trackUrl) throw e;
+                  api.log("warn", "640px track image failed (" + track.name + "): " + e + " — retrying lower-res variant");
+                  return api.storage.files.download(dir.concat([filename]), fb);
+                }).then(function (path) {
+                  // #v busts the WebView's cache for this session — the hi-res
+                  // migration overwrites files in place, and without it the UI
+                  // keeps showing the stale 64px image (same trick as covers).
+                  track.imageUrl = path + "#v=" + Date.now();
                   track.coverFile = filename;
                 }).catch(function (e) {
                   stats.trackFails++;
@@ -2254,7 +2304,7 @@ function activate(api) {
                   section: name,
                   description: "",
                   cardSubtitle: raw.subtitle || "",
-                  imageUrl: raw.imageUrl || null,
+                  imageUrl: raw.imageUrl ? upgradeImageUrl(raw.imageUrl) : null,
                   coverVersion: null,
                   kind: raw.kind === "album" ? "album" : "playlist",
                   lastSyncedAt: new Date().toISOString(),
@@ -2344,10 +2394,14 @@ function activate(api) {
           } else if (finalTracks && finalTracks.length > 0) {
             // Only a non-empty scrape refreshes metadata + the TTL stamp.
             if (descr) pl.description = descr;
-            if (coverUrl) pl.imageUrl = coverUrl;
+            if (coverUrl) pl.imageUrl = upgradeImageUrl(coverUrl);
             pl.tracksFetchedAt = new Date().toISOString();
             pl.lastSyncedAt = pl.tracksFetchedAt;
           }
+          // Upgrade scraped 64px thumbnail URLs to the 640px variant before
+          // they're persisted or handed to the host (play/enqueue can run off
+          // these http URLs before cacheAllImages replaces them with paths).
+          upgradeTrackImages(finalTracks);
           // Album pages omit the per-row album column; backfill it from the
           // album's own title before persisting (no-op for playlists).
           fillAlbumName(pl, finalTracks);
@@ -2391,7 +2445,7 @@ function activate(api) {
             if (settled) return;
             if (msg.data.gen !== gen) return;
             if (!Array.isArray(msg.data.tracks)) return;
-            state.playlistTracks[pl.id] = fillAlbumName(pl, msg.data.tracks);
+            state.playlistTracks[pl.id] = fillAlbumName(pl, upgradeTrackImages(msg.data.tracks));
             if (state.currentPlaylist && state.currentPlaylist.id === pl.id) renderPlaylist();
             return;
           }
@@ -2900,7 +2954,9 @@ function activate(api) {
           if (msg.type === "tracks" && msg.data && msg.data.playlistId === RADIO_SCRAPE_ID && phase === "scrape") {
             if (timer) { clearTimeout(timer); timer = null; }
             if (msg.data.error) plog("warn", "radio", "radio scrape error: " + msg.data.error);
-            done(msg.data.tracks || []);
+            // Radio tracks go straight to the queue (never through settle/
+            // cacheAllImages), so upgrade their 64px thumbnail URLs here.
+            done(upgradeTrackImages(msg.data.tracks || []));
             return;
           }
           // "tracks-progress" is ignored — nothing consumes partial rows.
@@ -3404,7 +3460,30 @@ function activate(api) {
     }).catch(console.error);
   }
 
-  loadInitialState().then(maybeFirstRunLogin).catch(console.error);
+  // One-time migration (hi-res artwork): older builds cached the 64px DOM
+  // thumbnails, and the cached files hold no source URL to upgrade. Mark every
+  // playlist's tracks stale so the next sync/open re-scrapes and re-downloads
+  // artwork at the 640px variant (same filenames, overwritten in place).
+  // Guarded by a persisted flag so it runs at most once; fresh installs just
+  // set the flag — their first sync downloads hi-res from the start.
+  function maybeMigrateHiResImages(hasData) {
+    return api.storage.get("spotify_browse_hires_images_done").then(function (done) {
+      if (done) return;
+      api.storage.set("spotify_browse_hires_images_done", true).catch(console.error);
+      if (!hasData || state.playlists.length === 0) return;
+      plog("info", "images", "hi-res artwork migration: marking " + state.playlists.length +
+        " playlists stale so track art re-downloads at 640px");
+      for (var i = 0; i < state.playlists.length; i++) {
+        state.playlists[i].tracksFetchedAt = null;
+      }
+      return saveAllPlaylists();
+    }).catch(function (e) { console.error("hi-res image migration failed:", e); });
+  }
+
+  loadInitialState().then(function (hasData) {
+    maybeMigrateHiResImages(hasData);
+    maybeFirstRunLogin(hasData);
+  }).catch(console.error);
   // Make sure shelves register immediately if state.sections has any defaults,
   // even before loadInitialState resolves.
   syncHomeShelves();
