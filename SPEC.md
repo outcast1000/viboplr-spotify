@@ -78,6 +78,9 @@ tracks through Viboplr's fallback resolution.
 - Auto-refresh interval select (Off / 6h / 12h / 24h / 2 days / weekly)
 - Show browser window during refresh toggle
 - Debug logging toggle (writes a per-run `logs/YYYYMMDD-HHMMSS.log`)
+- Include albums in sync toggle
+- **Liked Songs** section: "Import Liked Songs" (see *Liked Songs import* below);
+  shown only when the host exposes the batch like APIs
 - Step-by-step debugger: Check Login → Scrape Shelves → Scrape Tracks
 
 ## Scraping Flow
@@ -214,6 +217,36 @@ against the live Spotify DOM (headed, reusing the `verify:scrape` login profile)
 and prints where it fails — including the menu-item labels it saw when the radio
 item isn't found. Run it with `VERIFY_DEBUG=1` to surface the injected scripts'
 `_dbg` stream.
+
+### Liked Songs import (`importLikedSongs`)
+
+Settings-panel action that turns the user's Spotify **Liked Songs** into Viboplr
+likes. Runs inside `withSpotifyWindow` (login flow, single-window gate,
+generation guard) like every other scrape:
+
+1. Navigate to `/collection/tracks` — a fixed URL with no entity id, but the
+   page renders the same virtualized tracklist markup as a playlist page, so the
+   shared `scriptScrollThenScrape` parses it unchanged (`kind: "collection"`
+   only changes the navigation URL). Scroll budget `LIKED_MAX_STEPS` (500);
+   timeout is **stall-based** (`LIKED_STALL_MS`, 45s with no new rows) rather
+   than total-duration — a large list legitimately takes minutes.
+2. Dedupe rows by normalized title+artist (the host's like store key).
+3. `api.library.getTrackLikeStates` → **skip** rows already liked or disliked
+   locally. The scrape carries no per-row "date added", so an unconditional
+   write would stamp every existing like with a fresh `updated_at` (reordering
+   the host's Liked Tracks system playlist) and silently flip deliberate local
+   dislikes. Skipping keeps the import strictly additive.
+4. Remaining rows go to `api.library.setTrackLikesBatch` in chunks of
+   `LIKED_BATCH` (200) — the host's newer-wins merge, the same one behind its
+   Import-likes file path — with a progress line per chunk.
+
+Cancel sets a flag checked on every progress tick **and** closes the scrape
+window (the host emits `window-closed` on any window Destroyed, which resolves
+`withSpotifyWindow` with `null` — this is what unblocks a cancel parked at the
+sign-in wait). Cancelling is not a failure: the import returns to idle, keeping
+whatever chunks already landed (the merge is idempotent, so re-running finishes
+the job). The result line reports added / already-liked / skipped-as-disliked
+counts. Verified against the live DOM by `npm run verify:liked`.
 
 ### Refresh Prefetch (warm recently-loaded playlists)
 

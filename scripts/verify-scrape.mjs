@@ -21,12 +21,16 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout, platform, env } from "node:process";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { extractScripts } from "./extract-scripts.mjs";
 
-const PROFILE_DIR = new URL("./.spotify-profile/", import.meta.url).pathname;
-const INDEX_PATH = new URL("../index.js", import.meta.url).pathname;
-const REPORT_PATH = new URL("./verify-report.html", import.meta.url).pathname;
-const CONFIG_PATH = new URL("./verify-config.json", import.meta.url).pathname;
+// fileURLToPath, not URL.pathname: pathname keeps the leading slash on Windows
+// ("/D:/…"), which resolves relative to the cwd drive as "D:\D:\…" and ENOENTs.
+// verify-radio.mjs already does it this way.
+const PROFILE_DIR = fileURLToPath(new URL("./.spotify-profile/", import.meta.url));
+const INDEX_PATH = fileURLToPath(new URL("../index.js", import.meta.url));
+const REPORT_PATH = fileURLToPath(new URL("./verify-report.html", import.meta.url));
+const CONFIG_PATH = fileURLToPath(new URL("./verify-config.json", import.meta.url));
 
 // ---- Options ("plugin settings", emulated for the host-less harness) ----
 //

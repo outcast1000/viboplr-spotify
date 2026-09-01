@@ -64,7 +64,21 @@ function activate(api) {
     // prefetch (prefetchRecentlyLoaded) so a frequently-used playlist's tracks
     // are already warm the next time the user opens it.
     recentlyLoaded: [],
+    // Liked Songs import (Settings section). In-memory only, like the sync
+    // status — an interrupted import just re-runs, it has nothing to restore.
+    likedImporting: false,
+    likedImportCancelled: false,
+    likedImportStage: "",
+    likedImportResult: null,
+    likedImportError: "",
   };
+
+  // The host added the batch like APIs (0.9.9x era) after this plugin's
+  // minAppVersion; gate the Liked Songs import on both so older hosts simply
+  // never show the section instead of erroring on click.
+  var canImportLikes = !!(api.library &&
+    typeof api.library.setTrackLikesBatch === "function" &&
+    typeof api.library.getTrackLikeStates === "function");
 
   // Lazy-track cache TTL. Tracks scraped on demand are reused for this long
   // before a View/Play triggers a fresh scrape. See the lazy-single-page spec.
@@ -995,12 +1009,53 @@ function activate(api) {
     ch.push({ type: "toggle", label: "Debug logging", checked: state.debugLogging, action: "toggle-debug-logging" });
     ch.push({ type: "toggle", label: "Include albums in sync", checked: state.includeAlbums, action: "toggle-include-albums" });
 
+    if (canImportLikes) ch.push(buildLikedImportSection());
+
     ch.push(buildDebugTestSection());
     ch.push(buildDiagnosticsSection());
 
     api.ui.setViewData("spotify-settings", {
       type: "layout", direction: "vertical", children: ch,
     });
+  }
+
+  // Settings section for the Liked Songs → likes import. Three states, one at
+  // a time: running (stage line + Cancel), finished (summary + Dismiss), idle
+  // (the Import row, plus the last error if one is standing).
+  function buildLikedImportSection() {
+    var rows = [];
+    if (state.likedImporting) {
+      rows.push({ type: "text", content: "<p>" + escapeHtml(state.likedImportStage || "Working…") + "</p>" });
+      rows.push({
+        type: "button",
+        label: state.likedImportCancelled ? "Cancelling…" : "Cancel",
+        action: "cancel-liked-import",
+        variant: "secondary",
+        disabled: state.likedImportCancelled,
+      });
+    } else if (state.likedImportResult) {
+      var lr = state.likedImportResult;
+      var extras = [];
+      if (lr.alreadyLiked) extras.push(lr.alreadyLiked + " already liked");
+      if (lr.skippedDisliked) extras.push(lr.skippedDisliked + " skipped (disliked here)");
+      var summary = (lr.cancelled ? "Import cancelled — added " : "Added ") +
+        lr.applied + " new like" + (lr.applied === 1 ? "" : "s") +
+        " from " + lr.seen + " Liked Song" + (lr.seen === 1 ? "" : "s") +
+        (extras.length ? " (" + extras.join(", ") + ")" : "") + ".";
+      rows.push({ type: "text", content: "<p>" + escapeHtml(summary) + "</p>" });
+      rows.push({ type: "button", label: "Dismiss", action: "dismiss-liked-result", variant: "secondary" });
+    } else {
+      if (state.likedImportError) {
+        rows.push({ type: "text", content: "<p>Import failed: " + escapeHtml(state.likedImportError) + "</p>" });
+      }
+      rows.push({
+        type: "settings-row",
+        label: "Import Liked Songs",
+        description: "Read your Spotify Liked Songs and add them as likes in Viboplr. Re-run any time — it only adds; tracks already liked or disliked here are left untouched.",
+        control: { type: "button", label: "Import", action: "import-liked-songs" },
+      });
+    }
+    return { type: "section", title: "Liked Songs", children: rows };
   }
 
   function buildDiagnosticsSection() {
@@ -1762,17 +1817,24 @@ function activate(api) {
   }
 
   function scriptNavigatePlaylist(id, kind) {
-    var path = kind === "album" ? "/album/" : "/playlist/";
+    // "collection" is the user's Liked Songs — a fixed URL with no entity id,
+    // but the page renders the same virtualized tracklist markup as a playlist,
+    // so the scroll-and-scrape script below works on it unchanged.
+    var path = kind === "album" ? "/album/" + id
+      : kind === "collection" ? "/collection/tracks"
+      : "/playlist/" + id;
     return '(function(){' +
       DBG_HELPER +
-      '_dbg("tracks","navigating to ' + path + id + '");' +
-      'window.location.href="' + path + id + '"' +
+      '_dbg("tracks","navigating to ' + path + '");' +
+      'window.location.href="' + path + '"' +
     '})()';
   }
 
   function scriptScrollThenScrape(playlistId, gen, opts) {
     var maxSteps = (opts && opts.maxSteps) || 60;
-    var entityPath = (opts && opts.kind === "album") ? "/album/" : "/playlist/";
+    var entityPath = (opts && opts.kind === "album") ? "/album/"
+      : (opts && opts.kind === "collection") ? "/collection/"
+      : "/playlist/";
     return '(function(){try{' +
       DBG_HELPER +
       IMG_HELPER +
@@ -3219,6 +3281,228 @@ function activate(api) {
     var pl = findPlaylistFromData(data);
     if (!pl) return;
     savePlaylistToApp(pl);
+  });
+
+  // ---- Liked Songs import (likes) ----
+  //
+  // Scrapes the user's Liked Songs (/collection/tracks — same tracklist markup
+  // as a playlist page, so the shared scroll-and-scrape script handles it) and
+  // writes each row as a Viboplr like via api.library.setTrackLikesBatch — the
+  // same newer-wins merge behind the host's Import-likes file path, so an
+  // import only ever adds and re-running is safe.
+  //
+  // Tracks already liked or disliked locally are skipped up front (via
+  // getTrackLikeStates) rather than re-written: the scrape carries no per-row
+  // "date added" (unlike Last.fm's loved timestamps), so an unconditional
+  // write would stamp every existing like with a fresh updated_at — reordering
+  // the host's Liked Tracks system playlist — and silently flip deliberate
+  // local dislikes. Skipping keeps the import strictly additive.
+
+  var LIKED_SONGS_ID = "liked-songs";
+  // Liked Songs can hold thousands of rows: raise the scroll-step cap well
+  // above the playlist default, and time out on *stall* (no new rows found for
+  // this long) rather than total duration — a big list legitimately takes
+  // minutes and progress ticks arrive every scroll step.
+  var LIKED_MAX_STEPS = 500;
+  var LIKED_STALL_MS = 45000;
+  // setTrackLikesBatch chunk size — keeps the settings panel's progress line
+  // moving on big imports instead of one long silent invoke.
+  var LIKED_BATCH = 200;
+
+  function setLikedStage(text) {
+    state.likedImportStage = text || "";
+    renderSettings();
+  }
+
+  function scrapeLikedSongs(visible) {
+    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible }, function (h, ctx) {
+      return new Promise(function (resolve, reject) {
+        var gen = ctx.gen;
+        var settled = false;
+        var stallTimer = null;
+        var lastCount = -1;
+
+        function settle(fn, arg) {
+          if (settled) return;
+          settled = true;
+          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+          fn(arg);
+        }
+        function arm() {
+          if (stallTimer) clearTimeout(stallTimer);
+          stallTimer = setTimeout(function () {
+            settle(reject, new Error("Timed out reading Liked Songs (no progress for " + Math.round(LIKED_STALL_MS / 1000) + "s)"));
+          }, LIKED_STALL_MS);
+        }
+
+        ctx.setHandler(function (msg) {
+          if (!msg.data || msg.data.playlistId !== LIKED_SONGS_ID) return;
+          if (msg.data.gen !== undefined && msg.data.gen !== gen) return;
+          // Cancel checks ride the progress ticks (every scroll step), so a
+          // cancel lands within ~a second; a page that stopped ticking is
+          // resolved by the stall timer instead.
+          if (state.likedImportCancelled) { settle(reject, new Error("Cancelled")); return; }
+          if (msg.type === "tracks-progress") {
+            var found = msg.data.found || 0;
+            if (found !== lastCount) {
+              lastCount = found;
+              arm();
+              setLikedStage("Reading Liked Songs… " + found + " track" + (found === 1 ? "" : "s") + " so far");
+            }
+            return;
+          }
+          if (msg.type === "tracks") {
+            if (msg.data.error && (!msg.data.tracks || msg.data.tracks.length === 0)) {
+              settle(reject, new Error("Couldn't read Liked Songs: " + msg.data.error));
+              return;
+            }
+            settle(resolve, msg.data.tracks || []);
+          }
+        });
+
+        h.eval(scriptNavigatePlaylist(LIKED_SONGS_ID, "collection"));
+        setTimeout(function () {
+          if (ctx.isStale() || state.likedImportCancelled) { settle(reject, new Error("Cancelled")); return; }
+          h.eval(scriptScrollThenScrape(LIKED_SONGS_ID, gen, { maxSteps: LIKED_MAX_STEPS, kind: "collection" }));
+          arm();
+        }, 4000);
+      });
+    });
+  }
+
+  function finishLikedImport(result) {
+    state.likedImporting = false;
+    state.likedImportStage = "";
+    state.likedImportResult = result;
+    renderSettings();
+  }
+
+  function importLikedSongs() {
+    if (!canImportLikes || state.likedImporting) return;
+    // Check the single-window gate BEFORE beginReport: withSpotifyWindow would
+    // reject as busy anyway, but by then beginReport would have clobbered the
+    // running sync's active diagnostics report.
+    if (windowBusy) {
+      state.likedImportError = "Spotify is busy — try again in a moment";
+      renderSettings();
+      return;
+    }
+    state.likedImporting = true;
+    state.likedImportCancelled = false;
+    state.likedImportResult = null;
+    state.likedImportError = "";
+    beginReport("liked-import");
+    // The report covers the scrape only; close it at most once, from here —
+    // a later write-phase failure must not close a report a background sync
+    // opened in the meantime.
+    var reportDone = false;
+    function closeReport(outcome, err) {
+      if (reportDone) return;
+      reportDone = true;
+      finishReport(outcome, err);
+    }
+    setLikedStage("Opening Spotify…");
+
+    scrapeLikedSongs(state.showBrowserOnRefresh).then(function (rows) {
+      // null = the user closed the browse window (withSpotifyWindow resolves
+      // null on window-closed) — treat exactly like a cancel.
+      if (!rows || state.likedImportCancelled) {
+        closeReport("cancelled");
+        finishLikedImport(null);
+        return;
+      }
+      closeReport("ok");
+
+      // Dedupe by normalized title+artist — the host's like store is keyed on
+      // exactly that pair, so same-song rows would only double-count "seen".
+      var seen = {};
+      var likes = [];
+      for (var i = 0; i < rows.length; i++) {
+        var title = ((rows[i] && rows[i].name) || "").trim();
+        if (!title) continue;
+        var artist = (rows[i].artist || "").trim();
+        var key = title.toLowerCase() + " " + artist.toLowerCase();
+        if (seen[key]) continue;
+        seen[key] = 1;
+        likes.push({ title: title, artistName: artist || null, liked: 1 });
+      }
+      if (likes.length === 0) {
+        finishLikedImport({ seen: 0, applied: 0, alreadyLiked: 0, skippedDisliked: 0 });
+        return;
+      }
+
+      setLikedStage("Checking " + likes.length + " tracks against your likes…");
+      return api.library.getTrackLikeStates(likes.map(function (l) {
+        return { title: l.title, artistName: l.artistName };
+      })).then(function (states) {
+        var fresh = [];
+        var alreadyLiked = 0;
+        var skippedDisliked = 0;
+        for (var i = 0; i < likes.length; i++) {
+          var s = (states && states[i]) || 0;
+          if (s === 1) { alreadyLiked++; continue; }
+          if (s === -1) { skippedDisliked++; continue; }
+          fresh.push(likes[i]);
+        }
+
+        var applied = 0;
+        var idx = 0;
+        function writeNext() {
+          if (state.likedImportCancelled || idx >= fresh.length) {
+            finishLikedImport({
+              seen: likes.length,
+              applied: applied,
+              alreadyLiked: alreadyLiked,
+              skippedDisliked: skippedDisliked,
+              cancelled: state.likedImportCancelled && idx < fresh.length,
+            });
+            return;
+          }
+          var chunk = fresh.slice(idx, idx + LIKED_BATCH);
+          idx += chunk.length;
+          setLikedStage("Importing… " + idx + " / " + fresh.length);
+          return api.library.setTrackLikesBatch(chunk).then(function (n) {
+            applied += n || 0;
+            return writeNext();
+          });
+        }
+        return writeNext();
+      });
+    }).catch(function (err) {
+      var msg = "" + ((err && err.message) || err);
+      var cancelled = msg === "Cancelled" || state.likedImportCancelled;
+      closeReport(cancelled ? "cancelled" : "error", cancelled ? null : msg);
+      if (cancelled) {
+        // Cancelling is not a failure — return to idle quietly.
+        finishLikedImport(null);
+        return;
+      }
+      console.error("[spotify] liked-songs import failed:", err);
+      state.likedImporting = false;
+      state.likedImportStage = "";
+      state.likedImportError = msg;
+      renderSettings();
+    });
+  }
+
+  api.ui.onAction("import-liked-songs", importLikedSongs);
+
+  api.ui.onAction("cancel-liked-import", function () {
+    state.likedImportCancelled = true;
+    // Close the scrape window too: the host emits window-closed on any window
+    // Destroyed (programmatic close included), which resolves withSpotifyWindow
+    // with null — so this also unblocks a cancel while the window is parked at
+    // the sign-in wait, where no scrape messages flow to check the flag.
+    // During likedImporting the single-window gate means any open window is ours.
+    if (state.likedImporting && activeScrapeHandle) {
+      activeScrapeHandle.close().catch(console.error);
+    }
+    renderSettings();
+  });
+
+  api.ui.onAction("dismiss-liked-result", function () {
+    state.likedImportResult = null;
+    renderSettings();
   });
 
   // ---- Settings actions ----

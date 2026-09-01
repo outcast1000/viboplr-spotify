@@ -1,13 +1,23 @@
 {
   "id": "spotify-browse",
   "name": "Spotify",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "author": "Viboplr",
   "description": "Browse your Spotify Music home — playlists grouped by shelf",
   "icon": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.5 16c2.5-1 5.5-1 7.5 0M7 13c3-1.5 7.5-1.5 10.5 0M5.5 10c4-2 9.5-2 13.5 0",
   "minAppVersion": "0.9.98",
   "homepage": "https://github.com/outcast1000/viboplr-spotify",
   "updateUrl": "https://github.com/outcast1000/viboplr-spotify/releases/latest/download/update.json",
+  "apiUsage": [
+    {
+      "api": "library.setTrackLikesBatch",
+      "reason": "Import your Spotify Liked Songs as likes"
+    },
+    {
+      "api": "library.getTrackLikeStates",
+      "reason": "Skip tracks already liked or disliked before importing"
+    }
+  ],
   "contributes": {
     "sidebarItems": [
       {

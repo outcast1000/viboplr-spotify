@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.18.0
+- **New: Import Liked Songs as likes.** Settings → Spotify → Liked Songs →
+  Import reads your Spotify Liked Songs (`/collection/tracks`, same scrape
+  machinery as playlists) and adds each as a Viboplr like through the host's
+  newer-wins merge (`api.library.setTrackLikesBatch`). Strictly additive and
+  safe to re-run: tracks already liked or disliked in Viboplr are skipped up
+  front, so existing likes keep their timestamps and deliberate local dislikes
+  are never flipped. Live progress while reading and importing, cancellable at
+  any point (including while waiting for sign-in); the result reports
+  added / already-liked / skipped-as-disliked counts. Shown only on hosts that
+  expose the batch like APIs.
+- New live-verify harness `npm run verify:liked` checks the Liked Songs page
+  still parses with the shared scrape script.
+- Fixed: `verify-scrape` harness failed on Windows with `D:\D:\…` ENOENT
+  (URL.pathname keeps the leading slash on Windows; now uses `fileURLToPath`,
+  matching `verify-radio`).
+
+
 ## v1.17.0
 - **Hi-res artwork.** Track images now cache at Spotify's 640px variant instead
   of the 64px thumbnail the tracklist DOM serves — so album art no longer looks
