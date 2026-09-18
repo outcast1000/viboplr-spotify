@@ -1,8 +1,9 @@
 # Viboplr Spotify Plugin
 
-Browse your Spotify library (liked songs and playlists) inside Viboplr by
-scraping the Spotify web app via an embedded browser window. See `SPEC.md` for
-architecture details.
+Browse your Spotify library (liked songs and playlists) and search Spotify for
+songs inside Viboplr by scraping the Spotify web app via an embedded browser
+window. Search works from the box at the top of the Spotify view and from the
+app's global search (Cmd+K). See `SPEC.md` for architecture details.
 
 Plugin id: `spotify-browse` (installed from the Viboplr plugin gallery).
 

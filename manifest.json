@@ -1,9 +1,9 @@
 {
   "id": "spotify-browse",
   "name": "Spotify",
-  "version": "1.18.0",
+  "version": "1.20.0",
   "author": "Viboplr",
-  "description": "Browse your Spotify Music home — playlists grouped by shelf",
+  "description": "Browse your Spotify Music home — playlists grouped by shelf — and search Spotify for songs",
   "icon": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.5 16c2.5-1 5.5-1 7.5 0M7 13c3-1.5 7.5-1.5 10.5 0M5.5 10c4-2 9.5-2 13.5 0",
   "minAppVersion": "0.9.98",
   "homepage": "https://github.com/outcast1000/viboplr-spotify",
@@ -19,11 +19,55 @@
     }
   ],
   "contributes": {
+    "assistant": {
+      "instructions": "Browse the user's scraped Spotify home (playlists grouped by section — Daily Mixes, Made For You, …). Content comes from periodic syncs, not live Spotify. TO PLAY: use the host's home-shelf verbs (GET /v1/home/shelves → POST /v1/home/shelf → POST /v1/home/play) — they handle lazy track resolution and backfill; playback rides other resolvers (usually yt-dlp). These tools are for READING the catalog first: status (is anything synced), list_playlists, get_playlist_tracks (serves the cache, scraping lazily on a miss — can take tens of seconds).",
+      "tools": [
+        {
+          "name": "status",
+          "description": "What the Spotify scraper knows: playlist count, section names, sync state, last check time"
+        },
+        {
+          "name": "list_playlists",
+          "description": "The scraped playlists (id, name, section, cached track count), optionally one section's",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "section": {
+                "type": "string",
+                "description": "Filter to one section name (from status)"
+              }
+            }
+          }
+        },
+        {
+          "name": "get_playlist_tracks",
+          "description": "A playlist's tracks (title/artist/album). Served from cache; an unfetched playlist is scraped lazily — slow (tens of seconds)",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Playlist id from list_playlists"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        }
+      ]
+    },
     "sidebarItems": [
       {
         "id": "spotify",
         "label": "Spotify",
         "icon": "spotify"
+      }
+    ],
+    "searchProviders": [
+      {
+        "id": "spotify",
+        "name": "Spotify"
       }
     ],
     "settingsPanel": {

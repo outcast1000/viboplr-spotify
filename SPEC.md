@@ -56,6 +56,24 @@ tracks through Viboplr's fallback resolution.
 - **Buttons:** "Sync" (idle/done) or "Cancel" (during scrape), plus a "Browser: ON/OFF" toggle
 - **Status text:** Live scrape progress during activity, last check time + results when idle, error messages on failure
 
+### Search box (hoisted under the toolbar, home + results views)
+- A submit-only `search-input` ("Search Spotify for songs…", `spotify-search`).
+  It is the view's **first top-level search-input**, which is what the host
+  fills in and submits when the Cmd+K no-match state opens this view with a
+  query — so that entry point searches with no extra wiring.
+- Submitting switches to the **Search Results view** (see *Song search* below),
+  laid out like the yt-dlp plugin's search tab: the same toolbar (plus a Home
+  button) + box, and the results directly underneath as a **selectable
+  `track-row-list`** with list actions **Play / Queue / Radio** (Radio seeds a
+  Spotify song radio from the first selected row). The list's own All / None
+  toolbar covers "play everything", so there is no separate header. A plain row
+  click plays that one song; rows carry `path` / `artistName` / `durationSecs`
+  so the host's native right-click menu, artwork lookup and drag-to-queue work
+  without a DB id. Loading is the host `loading` node; "No results.", errors and
+  the idle hint are `ds-empty` text. While a search runs the button reads
+  **Cancel** and submitting aborts it (generation bump + window close, like the
+  toolbar's Cancel). An empty query returns to the home view.
+
 ### Stacked Shelves (the main view)
 - The view mirrors the Spotify Music home page: one **section per shelf**, stacked
   vertically, each as a heading (the shelf name) + an optional gray description
@@ -218,6 +236,53 @@ and prints where it fails — including the menu-item labels it saw when the rad
 item isn't found. Run it with `VERIFY_DEBUG=1` to surface the injected scripts'
 `_dbg` stream.
 
+### Song search (`scrapeSearchTracks`)
+
+Spotify's `/search/{q}/tracks` page is a plain tracklist — the same
+`[role="row"]` markup the playlist pages use, which the radio flow already
+parses to pick its seed — so the rows are read by the shared
+`scriptScrollThenScrape`. The one search-specific script is a **readiness
+gate**, and it exists because of a measured failure: the search page paints a
+few placeholder `[role="row"]`s long before any result lands, and the row
+parser's own "content ready" check accepts any row — so injected directly it
+scraped an empty list (3 rows, 0 track links, empty `<main>`). Same shape as
+the radio flow, and for the same reason: poll for the thing you need, never
+sleep a fixed interval.
+
+1. `withSpotifyWindow({ url: searchTracksUrl(q) })` opens the window at the
+   search URL (login flow, single-window gate, generation guard as everywhere).
+   If the login check reports the page is NOT on `/search/` (login bounced it),
+   `scriptNavigateSearch(q)` re-navigates first.
+2. **ready** — pump `scriptWaitForSearchResults(gen)` every 3s (`runOnce` +
+   `_poll`, ~25s budget) until it posts `search-ready` — `{ok}` once a
+   `[role="row"] a[href*="/track/"]` exists in `<main>`, or `{error, loggedOut}`
+   when the budget runs out. 45s step timeout.
+3. **scrape** — inject `scriptScrollThenScrape("search-results", gen,
+   { maxSteps: 3 })`; 30s timeout. Rows are capped at `SEARCH_MAX_RESULTS` (50)
+   and their thumbnails upgraded to 640px, like radio rows. Any timeout resolves
+   `[]` — a miss, never a reject.
+4. Non-empty results are kept in an in-memory cache for 10 minutes keyed by the
+   normalized query, so the view box and the Cmd+K provider don't each open a
+   window for the same text.
+
+Two consumers share it:
+
+- **The view box** (`runSearch`): shows the results view in its loading state,
+  scrapes, renders. A search started while another is in flight supersedes it
+  (the result is dropped if `state.search.query` moved on). A busy reject from
+  `withSpotifyWindow` renders as an error line, not a silent miss.
+- **The Cmd+K provider** (`contributes.searchProviders` `spotify`, handler via
+  `api.search.onQuery`): the host only calls it when the user picks the
+  "Search … on Spotify" row, so the window it opens is always asked for. Returns
+  `ok` (trimmed to the host's `limit`), `empty`, or `error` with the same
+  message. Guarded on `api.search` existing; older hosts ignore the manifest
+  entry.
+
+Results are metadata-only `PluginTrack`s (`spotify://{id}` path), so playback
+rides the host's stream-resolver chain exactly like a playlist row. Verified
+against the live DOM by `npm run verify:search`, which also fails when most rows
+come back without an artist or a Spotify id (selector drift).
+
 ### Liked Songs import (`importLikedSongs`)
 
 Settings-panel action that turns the user's Spotify **Liked Songs** into Viboplr
@@ -372,6 +437,15 @@ on cards and the detail header. A failed track scrape is retried up to twice
 | `save-playlist` | Detail view button | Save to app playlists via `api.playlists.save` |
 | `save-playlist-ctx` | Card context menu | Save to app playlists |
 
+### Search Actions
+| Action | Context | Behavior |
+|--------|---------|----------|
+| `spotify-search` | Search box (home + results views); also fired by the host's Cmd+K view seed | `runSearch(query)` — results view in loading state → `scrapeSearchTracks` → render; empty query returns home. While a search runs: `cancelSearch()` |
+| `play-search-track` | Result row click (`itemId`) | Play that one row |
+| `search-play` / `search-queue` | Row-list actions on the selection (`selectedIds`) | Play (with a `source: "search"` context) / enqueue the selected rows |
+| `search-radio` | Row-list action | `startSpotifyRadio` seeded from the first selected row |
+| `go-home` | Results view Home button | Back to the shelves (shared with the playlist view) |
+
 ### Track Actions (universal context menu)
 | Action | Context | Behavior |
 |--------|---------|----------|
@@ -389,6 +463,7 @@ on cards and the detail header. A failed track scrape is retried up to twice
 | `scriptSearchTopTrack(gen[, budgetMs])` | Poll for results, pick the top track → `radio-seed {trackId,name,artist}` (or `{error,loggedOut}`) | first `a[href*="/track/"]` in `main` |
 | `scriptNavigateTrackPage(id)` | Navigate to `/track/{id}` (radio seed) | direct URL assignment |
 | `scriptGoToRadio(gen, trackId[, budgetMs])` | On the seed's track page only: poll for the `…` menu, click "Go to song radio" → `radio-go` | `button[data-testid="more-button"]` + `[role="menuitem"]` matching `/radio/i` |
+| `scriptWaitForSearchResults(gen[, budgetMs])` | On the search `/tracks` page: poll until a real track row has rendered → `search-ready {ok,url}` (or `{error,loggedOut}`); gates the row parser, which the page's placeholder rows would otherwise satisfy early | `main [role="row"] a[href*="/track/"]` |
 | `scriptWaitForStation(gen, trackId[, budgetMs])` | Wait until the page has left the seed's track page → `radio-station {url}` | `location.pathname` vs `/track/{id}` (exact, `/intl-xx` stripped — the station lives at `/station/track/{id}`) |
 | `SCRIPT_LOGIN_BANNER` | Inject "please sign in" banner when not logged in | fixed-position `<div>` prepended to `<html>` |
 | `SCRIPT_REMOVE_LOGIN_BANNER` | Remove the sign-in banner once logged in | by element id |

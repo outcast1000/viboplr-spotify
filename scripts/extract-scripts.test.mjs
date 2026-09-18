@@ -58,6 +58,11 @@ test("extracts the scrape scripts from index.js", () => {
   assert.doesNotThrow(() => new Function(s.scriptSearchTopTrack(1)), "scriptSearchTopTrack parses");
   assert.doesNotThrow(() => new Function(s.scriptNavigateTrackPage("abc123")), "scriptNavigateTrackPage parses");
   assert.doesNotThrow(() => new Function(s.scriptGoToRadio(1)), "scriptGoToRadio parses");
+
+  // Song search: the results-rendered gate that runs before the row parser.
+  assert.equal(typeof s.scriptWaitForSearchResults, "function");
+  assert.ok(s.scriptWaitForSearchResults(1).includes("search-ready"), "search gate posts search-ready");
+  assert.doesNotThrow(() => new Function(s.scriptWaitForSearchResults(1)), "scriptWaitForSearchResults parses");
 });
 
 test("throws loudly when markers are missing", () => {

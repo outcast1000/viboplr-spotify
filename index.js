@@ -71,6 +71,11 @@ function activate(api) {
     likedImportStage: "",
     likedImportResult: null,
     likedImportError: "",
+    // Song search (the box at the top of the view + the Cmd+K provider). One
+    // query at a time; the scrape runs against Spotify's /search/{q}/tracks
+    // page. In-memory only — a search is cheap to redo and never worth
+    // restoring across sessions. status: idle | running | done | error.
+    search: { query: "", status: "idle", tracks: [], error: "" },
   };
 
   // The host added the batch like APIs (0.9.9x era) after this plugin's
@@ -728,7 +733,25 @@ function activate(api) {
       try { syncHomeShelves(); } catch (e) { console.error("syncHomeShelves failed:", e); }
     }
     if (state.currentView === "playlist") { renderPlaylist(); return; }
+    if (state.currentView === "search") { renderSearch(); return; }
     renderHome();
+  }
+
+  // The song-search box, hoisted with the toolbar on the home and results views
+  // (the host hoists leading toolbar/search-input nodes out of the scroll area).
+  // It is the FIRST top-level search-input, which is also the one the host
+  // fills in and submits when the Cmd+K no-match state opens this view with a
+  // query — so that path lands here with no extra wiring.
+  function buildSearchBox() {
+    return {
+      type: "search-input",
+      placeholder: "Search Spotify for songs…",
+      action: "spotify-search",
+      value: state.search.query,
+      // Same convention as the yt-dlp tab: the submit button reads Cancel while
+      // a search runs, and pressing it then aborts the scrape.
+      buttonLabel: state.search.status === "running" ? "Cancel" : "Search",
+    };
   }
 
   function isActiveStatus() {
@@ -856,7 +879,7 @@ function activate(api) {
 
     var toolbar = buildToolbar();
     toolbar.buttons.push({ label: state.showBrowserOnRefresh ? "Browser: ON" : "Browser: OFF", action: "toggle-show-browser-pref", variant: state.showBrowserOnRefresh ? "accent" : "secondary" });
-    var view = [toolbar];
+    var view = [toolbar, buildSearchBox()];
 
     // Empty state: nothing scraped yet.
     if (state.sections.length === 0) {
@@ -885,6 +908,61 @@ function activate(api) {
     }
 
     api.ui.setViewData("spotify", { type: "layout", direction: "vertical", children: view }, { scrollKey: "home" });
+  }
+
+  // One result row, in the shape the yt-dlp search tab uses: the row's own
+  // metadata (path / artistName / durationSecs) lets the host build the native
+  // right-click menu, resolve artwork by name and allow drag-to-queue without a
+  // DB id; `action` is the plain row click.
+  function buildSearchRow(t, i) {
+    return {
+      id: "track:" + i,
+      title: t.name || "Unknown",
+      subtitle: (t.artist || "Unknown") + (t.album ? " · " + t.album : ""),
+      duration: t.duration || "",
+      imageUrl: t.imageUrl || undefined,
+      action: "play-search-track",
+      path: t.spotifyId ? "spotify://" + t.spotifyId : null,
+      artistName: t.artist || null,
+      durationSecs: parseDuration(t.duration),
+    };
+  }
+
+  // Song-search results, laid out like the yt-dlp tab: the hoisted toolbar +
+  // box, then the results straight underneath — a selectable row list whose
+  // toolbar (All / None + the list actions) covers "play everything" as well
+  // as any subset, so there is no separate header with Play all buttons.
+  // Empty / error / idle states are the host's `ds-empty` text, as there.
+  function renderSearch() {
+    api.ui.setBadge("spotify", null);
+    var s = state.search;
+    var toolbar = buildToolbar();
+    toolbar.buttons.push({ label: "Home", action: "go-home", variant: "secondary" });
+    var ch = [toolbar, buildSearchBox()];
+
+    if (s.status === "running") {
+      ch.push({ type: "loading", message: "Searching…" });
+    } else if (s.status === "error") {
+      ch.push({ type: "text", content: s.error || "Search failed.", className: "ds-empty" });
+    } else if (s.status === "done" && s.tracks.length === 0) {
+      ch.push({ type: "text", content: "No results.", className: "ds-empty" });
+    } else if (s.status === "done") {
+      var items = [];
+      for (var i = 0; i < s.tracks.length; i++) items.push(buildSearchRow(s.tracks[i], i));
+      ch.push({
+        type: "track-row-list",
+        selectable: true,
+        items: items,
+        actions: [
+          { id: "search-play", label: "Play", icon: "▶" },
+          { id: "search-queue", label: "Queue", icon: "+" },
+          { id: "search-radio", label: "Radio", icon: "📻" },
+        ],
+      });
+    } else {
+      ch.push({ type: "text", content: "Search Spotify for a song. Results play through the app's resolvers (usually yt-dlp), like a playlist row; Radio starts a Spotify song radio from the selection.", className: "ds-empty" });
+    }
+    api.ui.setViewData("spotify", { type: "layout", direction: "vertical", children: ch }, { scrollKey: "search:" + s.query });
   }
 
   // Build the hero's crossfade background (bgImages, host caps at 4): the cover
@@ -1846,7 +1924,10 @@ function activate(api) {
         'var mainEl=document.querySelector("[data-testid=\\"playlist-tracklist\\"]")' +
           '||document.querySelector("main")||document;' +
         'var found=document.scrollingElement;' +
-        'var walker=mainEl;' +
+        // Before the SPA has rendered <main>, mainEl is the document itself, and
+        // getComputedStyle(document) throws — start the walk at <body> then (the
+        // loop exits at once and waitForContent keeps polling for content).
+        'var walker=(mainEl&&mainEl.nodeType===1)?mainEl:document.body;' +
         'while(walker&&walker!==document.body){' +
           'var cs=window.getComputedStyle(walker);' +
           'var ov=cs.overflowY;' +
@@ -2163,6 +2244,34 @@ function activate(api) {
         'window.__viboplr.send("radio-station",{ok:true,url:url,gen:_gen});' +
       '},' + budget + ');' +
     '}catch(e){try{window.__viboplr.send("radio-station",{error:"station wait error: "+e,gen:' + gen + '})}catch(_){}}})()';
+  }
+
+  // On the search "/tracks" page: poll until at least one real track row has
+  // rendered, then post "search-ready" (or {error, loggedOut} once the budget is
+  // spent). Needed because the shared row parser's own readiness check accepts
+  // ANY [role="row"] — and the search page paints a few placeholder rows long
+  // before results land, so without this gate it scraped an empty list.
+  function scriptWaitForSearchResults(gen, budgetMs) {
+    var budget = budgetMs || 25000;
+    return '(function(){try{' +
+      runOnce("searchReady") +
+      DBG_HELPER + POLL_HELPER +
+      'var _gen=' + gen + ';' +
+      '_dbg("search","waiting for search results",{url:location.href,budgetMs:' + budget + '});' +
+      '_poll(function(){' +
+        'var scope=document.querySelector("main")||document;' +
+        'return scope.querySelector("[role=\\"row\\"] a[href*=\\"/track/\\"]")?location.href:null;' +
+      '},function(url){' +
+        'if(!url){' +
+          'var loggedOut=!!document.querySelector("[data-testid=\\"login-button\\"], [data-testid=\\"signup-button\\"]");' +
+          '_dbg("search","no track results",{url:location.href,loggedOut:loggedOut});' +
+          'window.__viboplr.send("search-ready",{error:loggedOut?"signed out":"no track results",loggedOut:loggedOut,url:location.href,gen:_gen});' +
+          'return;' +
+        '}' +
+        '_dbg("search","results rendered",{url:url});' +
+        'window.__viboplr.send("search-ready",{ok:true,url:url,gen:_gen});' +
+      '},' + budget + ');' +
+    '}catch(e){try{window.__viboplr.send("search-ready",{error:"search wait error: "+e,gen:' + gen + '})}catch(_){}}})()';
   }
 
   // <<< SCRAPE-SCRIPTS-END
@@ -3150,6 +3259,236 @@ function activate(api) {
     });
   }
 
+  // ---- Song search (view box + Cmd+K provider) ----
+  //
+  // Spotify's /search/{q}/tracks page is a plain tracklist — the same
+  // [role="row"] markup the playlist pages use — so the search is: open the
+  // window at that URL (withSpotifyWindow: login flow, single-window gate,
+  // generation guard) and run the shared row parser over the first screenfuls.
+  // No new injected script; the radio flow already proved the page parses.
+
+  // Synthetic id keying the reused track-scrape messages for the search page.
+  var SEARCH_SCRAPE_ID = "search-results";
+  // Rows past this are never shown — the box is for finding a song, not paging
+  // a catalog — and fewer scroll steps keep the scrape a few seconds long.
+  var SEARCH_MAX_RESULTS = 50;
+  var SEARCH_MAX_STEPS = 3;
+  // A repeated query (the view box after the Cmd+K provider, or the other way
+  // round) is served from memory for this long instead of re-opening a window.
+  var SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+  var searchCache = {}; // normalized query -> { at, tracks }
+
+  function searchCacheKey(q) { return q.trim().toLowerCase(); }
+  function cachedSearch(q) {
+    var hit = searchCache[searchCacheKey(q)];
+    if (hit && Date.now() - hit.at < SEARCH_CACHE_TTL_MS) return hit.tracks;
+    return null;
+  }
+
+  // Resolve the tracks Spotify lists for `query`. Resolves [] on a miss or
+  // timeout; rejects only when a window can't be opened (busy / open failure).
+  function scrapeSearchTracks(query, visible) {
+    var cached = cachedSearch(query);
+    if (cached) return Promise.resolve(cached);
+    return withSpotifyWindow({ url: searchTracksUrl(query), visible: visible }, function (h, ctx) {
+      return new Promise(function (resolve) {
+        var gen = ctx.gen;
+        var phase = "ready"; // ready -> scrape
+        var settled = false;
+        var timer = null;
+        var pumpTimer = null;
+
+        function stopPump() {
+          if (pumpTimer) { clearInterval(pumpTimer); pumpTimer = null; }
+        }
+        // Same pump as the radio flow: re-fire the gate script every 3s until it
+        // answers. It runs once per document and a script eval'd while a
+        // navigation is committing dies with the old page, so a single shot
+        // could wait out the whole timeout for nothing.
+        function pump(script) {
+          stopPump();
+          h.eval(script);
+          pumpTimer = setInterval(function () {
+            if (ctx.isStale() || settled) { stopPump(); return; }
+            h.eval(script);
+          }, 3000);
+        }
+        function done(tracks) {
+          if (settled) return;
+          settled = true;
+          stopPump();
+          if (timer) { clearTimeout(timer); timer = null; }
+          var out = upgradeTrackImages((tracks || []).slice(0, SEARCH_MAX_RESULTS));
+          if (out.length > 0) searchCache[searchCacheKey(query)] = { at: Date.now(), tracks: out };
+          resolve(out);
+        }
+        function armTimeout(ms, label) {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(function () {
+            plog("warn", "search", label + " timeout for “" + query + "”");
+            done([]);
+          }, ms);
+        }
+
+        ctx.setHandler(function (msg) {
+          if (ctx.isStale() || settled) return;
+          if (msg.data && msg.data.gen != null && msg.data.gen !== gen) return;
+
+          // Gate: results have rendered (the page paints placeholder rows first,
+          // which the row parser would otherwise accept as content).
+          if (msg.type === "search-ready" && phase === "ready") {
+            stopPump();
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (!msg.data || msg.data.error || !msg.data.ok) {
+              plog("warn", "search", "no results rendered for “" + query + "”", msg.data);
+              done([]);
+              return;
+            }
+            phase = "scrape";
+            h.eval(scriptScrollThenScrape(SEARCH_SCRAPE_ID, gen, { maxSteps: SEARCH_MAX_STEPS }));
+            armTimeout(30000, "search scrape");
+            return;
+          }
+
+          if (msg.type === "tracks" && msg.data && msg.data.playlistId === SEARCH_SCRAPE_ID && phase === "scrape") {
+            if (msg.data.error) plog("warn", "search", "search scrape error: " + msg.data.error);
+            var tracks = msg.data.tracks || [];
+            plog("info", "search", "“" + query + "”: " + tracks.length + " rows");
+            done(tracks);
+          }
+        });
+
+        // The window opened AT the search URL; only re-navigate when login
+        // bounced the page elsewhere (same reasoning as the radio flow).
+        if (!ctx.loginUrl || ctx.loginUrl.indexOf("/search/") === -1) {
+          plog("info", "search", "not on the search page, navigating", { at: ctx.loginUrl });
+          h.eval(scriptNavigateSearch(query));
+        }
+        pump(scriptWaitForSearchResults(gen));
+        armTimeout(45000, "results wait");
+      });
+    });
+  }
+
+  function searchErrorMessage(e) {
+    var m = (e && e.message) || String(e);
+    return m.indexOf("busy") !== -1
+      ? "Spotify is busy (a sync or another scrape is running) — try again in a moment."
+      : "Couldn't search Spotify: " + m;
+  }
+
+  // Run a search from the view's box: show the results view in its loading
+  // state, scrape, render. A query that is already showing is re-run (the box
+  // is submit-only, so a second Enter is a deliberate refresh) — but served
+  // from the 10-minute cache when one exists.
+  function runSearch(query) {
+    var q = (query || "").trim();
+    if (!q) {
+      state.search = { query: "", status: "idle", tracks: [], error: "" };
+      state.currentView = "home";
+      render();
+      return;
+    }
+    cancelPrefetch();
+    state.currentView = "search";
+    state.currentPlaylist = null;
+    state.loadingTracksFor = null;
+    state.search = { query: q, status: "running", tracks: [], error: "" };
+    render();
+    scrapeSearchTracks(q, !!state.showBrowserOnRefresh).then(function (tracks) {
+      // A newer search supersedes this one — never paint stale rows over it.
+      if (state.search.query !== q) return;
+      state.search = { query: q, status: "done", tracks: tracks || [], error: "" };
+      render();
+    }, function (e) {
+      console.error("Spotify search failed:", e);
+      if (state.search.query !== q) return;
+      state.search = { query: q, status: "error", tracks: [], error: searchErrorMessage(e) };
+      render();
+    });
+  }
+
+  // Abort a running search: the same generation bump + window close the
+  // toolbar's Cancel does, then back to the box's idle state. The in-flight
+  // promise resolves null/empty on the closed window and is dropped because the
+  // query no longer matches.
+  function cancelSearch() {
+    scrapeGeneration++;
+    if (activeScrapeHandle) {
+      activeScrapeHandle.close().catch(console.error);
+      activeScrapeHandle = null;
+    }
+    windowBusy = false;
+    state.search = { query: "", status: "idle", tracks: [], error: "" };
+    render();
+  }
+
+  api.ui.onAction("spotify-search", function (data) {
+    // Submit while a search runs = Cancel (the button says so).
+    if (state.search.status === "running") { cancelSearch(); return; }
+    var value = "";
+    if (data) {
+      if (typeof data.query === "string") value = data.query;
+      else if (typeof data.value === "string") value = data.value;
+    }
+    runSearch(value);
+  });
+
+  // Row id "track:<index>" -> the scraped row, for both the plain row click
+  // (`itemId`) and the selection actions (`selectedIds`).
+  function searchRowAt(id) {
+    if (!id) return null;
+    var parts = String(id).split(":");
+    if (parts[0] !== "track") return null;
+    var index = parseInt(parts[1], 10);
+    var tracks = state.search.tracks || [];
+    return (index >= 0 && index < tracks.length) ? tracks[index] : null;
+  }
+  function selectedSearchRows(data) {
+    var ids = (data && data.selectedIds) ? data.selectedIds : [];
+    var out = [];
+    for (var i = 0; i < ids.length; i++) { var t = searchRowAt(ids[i]); if (t) out.push(t); }
+    return out;
+  }
+
+  api.ui.onAction("play-search-track", function (data) {
+    var t = searchRowAt(data && data.itemId);
+    if (t) api.playback.playTracks(toPluginTracks([t]), 0);
+  });
+  api.ui.onAction("search-play", function (data) {
+    var rows = selectedSearchRows(data);
+    if (rows.length === 0) return;
+    api.playback.playTracks(toPluginTracks(rows), 0, { name: "Spotify · “" + state.search.query + "”", source: "search" });
+  });
+  api.ui.onAction("search-queue", function (data) {
+    var rows = selectedSearchRows(data);
+    if (rows.length === 0) return;
+    api.playback.insertTracks(toPluginTracks(rows), -1);
+  });
+  // Radio seeds from ONE track; with several selected, the first is the seed.
+  api.ui.onAction("search-radio", function (data) {
+    var rows = selectedSearchRows(data);
+    if (rows.length === 0) return;
+    startSpotifyRadio(rows[0].name || "", rows[0].artist || "");
+  });
+
+  // Cmd+K provider (declared in the manifest's contributes.searchProviders).
+  // The host only calls this when the user picks the "Search … on Spotify"
+  // row, so the window it opens is always something the user asked for. Older
+  // hosts have no api.search — the manifest entry is then inert.
+  if (api.search && typeof api.search.onQuery === "function") {
+    api.search.onQuery("spotify", function (query, limit) {
+      return scrapeSearchTracks(query, !!state.showBrowserOnRefresh).then(function (tracks) {
+        if (!tracks || tracks.length === 0) return { status: "empty" };
+        var n = (typeof limit === "number" && limit > 0) ? Math.min(limit, tracks.length) : tracks.length;
+        return { status: "ok", tracks: toPluginTracks(tracks.slice(0, n)) };
+      }, function (e) {
+        console.error("Spotify search provider failed:", e);
+        return { status: "error", message: searchErrorMessage(e) };
+      });
+    });
+  }
+
   // ---- Context menu actions for playlist cards ----
 
   function findPlaylistFromData(data) {
@@ -3678,6 +4017,60 @@ function activate(api) {
       }
       registeredShelves[id] = sectionName;
     }
+  }
+
+  // ---- Assistant tools (api.assistant) ----
+  // Read access for AI assistants to what the scraper knows. Playing goes
+  // through the host's home-shelf verbs (GET /v1/home/shelves → POST
+  // /v1/home/play), which already handle the lazy resolve + backfill; these
+  // tools exist so a model can see the catalog before choosing a card.
+  // Guarded: older hosts have no api.assistant namespace.
+  if (api.assistant) {
+    api.assistant.onTool("status", async function () {
+      return {
+        playlistCount: state.playlists.length,
+        sections: state.sections,
+        syncStatus: state.status,
+        lastCheckAt: state.lastCheckAt || null,
+      };
+    });
+
+    api.assistant.onTool("list_playlists", async function (args) {
+      var section = typeof args.section === "string" ? args.section : null;
+      var rows = [];
+      for (var i = 0; i < state.playlists.length; i++) {
+        var pl = state.playlists[i];
+        if (section && !sectionsEqual(pl.section, section)) continue;
+        rows.push({
+          id: pl.id,
+          name: pl.name,
+          section: pl.section || null,
+          cachedTracks: (state.playlistTracks[pl.id] || []).length,
+        });
+      }
+      return { playlists: rows };
+    });
+
+    api.assistant.onTool("get_playlist_tracks", async function (args) {
+      var id = args.id != null ? String(args.id) : "";
+      if (!id) throw new Error('"id" (from list_playlists) is required');
+      var pl = findPlaylistById(id);
+      if (!pl) throw new Error('no playlist with id "' + id + '" — call list_playlists first');
+      var cached = state.playlistTracks[pl.id];
+      var tracks = cached && cached.length > 0 ? cached : null;
+      if (!tracks) {
+        // Same lazy scrape the home-shelf play button awaits.
+        noteRecentlyLoaded(pl);
+        cancelPrefetch();
+        tracks = (await ensureTracks(pl)) || [];
+      }
+      return {
+        name: pl.name,
+        tracks: tracks.map(function (t) {
+          return { title: t.name, artist: t.artist || null, album: t.album || null, duration: t.duration || null };
+        }),
+      };
+    });
   }
 
   // ---- Init: restore previous data ----

@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.20.0
+- **New: search Spotify for songs.** A search box sits at the top of the
+  Spotify view; submitting it scrapes Spotify's `/search/{q}/tracks` page
+  (the same tracklist markup as a playlist, parsed by the shared row scraper)
+  and shows the songs the way the yt-dlp search tab does: a selectable list
+  with Play / Queue / Radio actions on the selection, a plain click to play one
+  row, the button reading Cancel while the search runs. Rows carry the
+  universal track context menu, so plugin actions work on a result.
+- The plugin is also a **global-search (Cmd+K) provider**: pick "Search … on
+  Spotify" in the dropdown and the results land there. Repeated queries are
+  served from a 10-minute in-memory cache instead of re-opening a window.
+- Opening the Spotify view from the Cmd+K no-match state on a host that seeds
+  the view's search box now runs the search straight away.
+- New live-verify harness `npm run verify:search` checks the search page still
+  parses (it also fails when most rows lose their artist or Spotify id).
+- Fixed a latent crash in the shared row scraper: injected before Spotify had
+  rendered `<main>`, its scroll-container walk started at the document itself
+  and `getComputedStyle` threw. Playlist scrapes never hit it (they inject
+  after a fixed wait); the search flow did. The walk now starts at `<body>`.
+
+## v1.19.0
+- **AI assistants can read the catalog.** Three tools on the host's new
+  assistant surface (`api.assistant`, Viboplr's AI control API): `status`
+  (what the scraper knows — playlist count, sections, sync state),
+  `list_playlists` (optionally one section's), and `get_playlist_tracks`
+  (served from the cache; an unfetched playlist runs the same lazy scrape the
+  home-shelf play button awaits).
+- Playing stays on the host's home-shelf verbs — the tools' instructions say
+  so — because that path already handles lazy resolution and backfill; these
+  tools exist so a model can see what's there before choosing a card.
+- Guarded on `api.assistant` existing — on hosts older than the surface this
+  release changes nothing.
+
 ## v1.18.0
 - **New: Import Liked Songs as likes.** Settings → Spotify → Liked Songs →
   Import reads your Spotify Liked Songs (`/collection/tracks`, same scrape

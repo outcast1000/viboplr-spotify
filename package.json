@@ -8,6 +8,7 @@
     "verify:scrape": "node scripts/verify-scrape.mjs",
     "verify:radio": "node scripts/verify-radio.mjs",
     "verify:liked": "node scripts/verify-liked.mjs",
+    "verify:search": "node scripts/verify-search.mjs",
     "test": "node --test \"scripts/**/*.test.mjs\""
   },
   "devDependencies": {

@@ -39,6 +39,8 @@ export function extractScripts(indexPath) {
     scriptNavigateTrackPage: sandbox.scriptNavigateTrackPage,
     scriptGoToRadio: sandbox.scriptGoToRadio,
     scriptWaitForStation: sandbox.scriptWaitForStation,
+    // Song search (results-rendered gate before the shared row parser).
+    scriptWaitForSearchResults: sandbox.scriptWaitForSearchResults,
   };
 
   for (const [k, v] of Object.entries(out)) {
