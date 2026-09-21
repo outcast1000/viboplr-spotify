@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.21.0
+- **Silence is now the host's job — and it needed to be.** The eval'd autoplay
+  gate can't hold: it never sees DRM/worker playback, and "Go to song radio"
+  starts playback by design, so a hidden station scrape was audible for a few
+  seconds. Viboplr v1.0.66 mutes browse windows at the engine level
+  (WKWebView `_setPageMuted:` / WebView2 `IsMuted`). The in-page gate stays as
+  a backup for older hosts; SPEC.md says plainly that it isn't enough there.
+- **Selectors re-verified against the live Spotify DOM (2026-09-21)** — several
+  had gone stale and were silently falling through to fallbacks, or to nothing:
+  - Playlist **descriptions** were always empty: `playlist-description` no
+    longer exists. The description is now read as the first free-standing text
+    between the title and the creator line, which is where Spotify puts it.
+  - Playlist **covers**: the cover `<img>` lives inside
+    `div[data-testid="playlist-image"]` (the old rule matched the div and found
+    no `src`), and the page has no `<header>`, so the header fallbacks never
+    fired. New chain: og:image → `playlist-image img` → largest hero image
+    outside the tracklist. Liked Songs gets its cover again.
+  - `tracklist-duration` is gone everywhere; duration reads the last grid cell.
+  - Login check: dropped the dead `.main-userWidget-box` / avatar signals and
+    `a[href*="/account"]`, which was a false positive (some regions render a
+    consumer-law "cancel" link to spotify.com/account on every page).
+- **Scrapes know when they're done.** Spotify publishes the tracklist length
+  as the grid's `aria-rowcount`; the shared row scraper stops as soon as it has
+  parsed that many rows instead of scrolling until the page stops moving (a
+  50-track playlist now finishes in ~2s), and reports `total` in every
+  progress message. The Liked Songs import shows "N of M" instead of "N so
+  far"; its 45s stall timeout is now the fallback, not the finish line.
+- Home-shelf card subtitles are read from Spotify's own card ids
+  (`card-title-…` → `card-subtitle-…`) instead of a parent-walking guess; the
+  guess remains the fallback for cards without ids.
+- SPEC.md: the radio station is only reachable through the "Go to song radio"
+  click — a direct load of `/station/track/{id}` redirects to the track page and
+  starts the radio in the player without a tracklist. Don't "optimise" it.
+
 ## v1.20.0
 - **New: search Spotify for songs.** A search box sits at the top of the
   Spotify view; submitting it scrapes Spotify's `/search/{q}/tracks` page

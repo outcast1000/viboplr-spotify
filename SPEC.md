@@ -126,7 +126,13 @@ failed. Manual syncs show none of these — their status lives in the toolbar.
 ### Phase 1: Login Check
 1. Open `open.spotify.com` in browse window (visible or headless)
 2. Poll every 3s by injecting `SCRIPT_CHECK_LOGIN`
-3. Script checks for positive signals (`user-widget-link`, library button, avatar) and negative signals (`login-button`, `signup-button`)
+3. Script checks for positive signals (`[data-testid="user-widget-link"]` — its
+   `aria-label` is the username — `[aria-label="Your Library"]`,
+   `[data-testid="now-playing-bar"]`, the global nav) and negative signals
+   (`login-button`, `signup-button`). Verified against the live DOM 2026-09-21;
+   the old `.main-userWidget-box` / avatar-image signals are gone, and
+   `a[href*="/account"]` was dropped because some regions render a consumer-law
+   footer link to `spotify.com/account/cancel/` whether or not you are signed in.
 4. If `positive && !negative` → logged in, proceed
 5. If still not logged in after a short grace period (~2 polls), the window is surfaced (`handle.show()`), a sign-in banner is injected (`SCRIPT_LOGIN_BANNER`), and a notification is shown. Polling then continues **indefinitely** — when the user logs in, the banner is removed (`SCRIPT_REMOVE_LOGIN_BANNER`), a headless window is re-hidden, and scraping proceeds; if the user closes the window first, the scrape aborts. This applies to both user-initiated Sync and silent auto-refresh.
 
@@ -155,7 +161,15 @@ it (or clicks "Refresh tracks"):
    `scriptScrollThenScrape(playlistId, gen)`.
 3. Auto-scroll to load all tracks; scope to `[data-testid="playlist-tracklist"]`
    or `<main>` to avoid the sidebar; parse each `[role="row"]` for track name,
-   artist(s), album, duration, image.
+   artist(s), album, duration (the last grid cell's `m:ss`), image. The grid's
+   `aria-rowcount` (rows + 1 header) is the list length: the scroll stops as
+   soon as that many rows are parsed and every `tracks-progress` / `tracks`
+   message carries it as `total` (null when the attribute is missing, in which
+   case the loop runs to the bottom as before). Cover: og:image, else
+   `[data-testid="playlist-image"] img`, else the largest hero `<img>` outside
+   the tracklist. Description: the first free-standing text between
+   `[data-testid="entityTitle"]` and the `[data-testid="creator-link"]` line —
+   there is no description testid. All verified live 2026-09-21.
 4. 45s timeout with up to 2 attempts (reload + re-scrape). On empty/error, old
    cached tracks are kept (transient-parse guard) **without** refreshing the TTL
    stamp, so the next view retries soon.
@@ -197,6 +211,20 @@ timeouts are the real cap: 45s seed, 45s go-radio, 30s station, 60s scrape.
 
 `scrapeRadioTracks` resolves `{ tracks, seedId }` — `seedId` being the Spotify id
 Spotify itself matched in step 1.
+
+**The menu click is the only way to the station page — do not "optimise" it into
+a navigation.** Spotify's client-side router knows `/station/track/{id}`, but a
+fresh load of that URL (logged in) redirects to `/track/{id}?autoplay_ok=1` and
+starts the radio *in the player* without ever rendering a tracklist. Only the
+"Go to song radio" click renders the station, and it lands on a real
+`/playlist/{id}` page (which is why the shared row parser works on it).
+
+**Radio starts playback by design.** "Go to song radio" is a play action, so the
+station page is entitled to make sound; the plugin's eval'd autoplay gate cannot
+stop it (nor DRM/worker playback paths). Silence comes from the host, which mutes
+browse windows at the engine level from v1.0.66 (`_setPageMuted:` on WKWebView,
+`IsMuted` on WebView2). On an older host the radio flow is audible for a few
+seconds in a hidden window; there is nothing the plugin can do about that.
 
 **Never navigate the window to a non-`http(s)` URL.** Spotify's page will hand
 off to the desktop app (`spotify:…`) given the chance, and a WKWebView that is
@@ -292,9 +320,14 @@ generation guard) like every other scrape:
 1. Navigate to `/collection/tracks` — a fixed URL with no entity id, but the
    page renders the same virtualized tracklist markup as a playlist page, so the
    shared `scriptScrollThenScrape` parses it unchanged (`kind: "collection"`
-   only changes the navigation URL). Scroll budget `LIKED_MAX_STEPS` (500);
-   timeout is **stall-based** (`LIKED_STALL_MS`, 45s with no new rows) rather
-   than total-duration — a large list legitimately takes minutes.
+   only changes the navigation URL). Scroll budget `LIKED_MAX_STEPS` (500).
+   The scrape knows when it is **done**: the tracklist grid publishes
+   `aria-rowcount` (rows + 1 header row), the shared parser stops once it has
+   parsed that many rows and reports it as `total`, and the settings panel
+   shows "N of M". The timeout is **stall-based** (`LIKED_STALL_MS`, 45s with
+   no new rows) rather than total-duration — a large list legitimately takes
+   minutes — and is the fallback for a page that stops rendering rows short of
+   its published count.
 2. Dedupe rows by normalized title+artist (the host's like store key).
 3. `api.library.getTrackLikeStates` → **skip** rows already liked or disliked
    locally. The scrape carries no per-row "date added", so an unconditional
@@ -491,7 +524,7 @@ on cards and the detail header. A failed track scrape is retried up to twice
   `npm run verify:radio` (search seed → "Go to song radio" → 50-track scrape).
   Spotify's song radio resolves to a real `/playlist/{id}` page, so the reused
   `scriptScrollThenScrape` parser handles it as a normal tracklist. That page has
-  **no cover image** (og:image absent, `playlist-image` has no usable src), so the
+  **no cover image** (no og:image, no hero `<img>` outside the tracklist), so the
   radio queue banner shows the title only — per-row track art still resolves. Re-run
   `verify:radio` if `scriptSearchTopTrack` / `scriptGoToRadio` ever stop finding a
   seed or the radio menu item (Spotify DOM drift).

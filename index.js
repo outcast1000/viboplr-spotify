@@ -1205,7 +1205,16 @@ function activate(api) {
   // signals object). Kept in one place so the JS-side login detection and the
   // diagnostics formatter never drift. The injected script copy is necessarily
   // a separate string literal.
-  var POSITIVE_LOGIN_SIGNALS = ["sessionTag", "userWidget", "userBox", "avatar", "accountLink", "libraryBtn", "createPlaylist", "globalNav", "leftSidebar", "nowPlayingBar", "mainNav"];
+  // Checked against the live DOM 2026-09-21 (logged in): userWidget
+  // ([data-testid="user-widget-link"], aria-label = the username), libraryBtn
+  // ([aria-label="Your Library"] — the your-library-button testid is gone),
+  // nowPlayingBar, globalNav and mainNav are present; sessionTag is a
+  // server-render artefact that may or may not be there. The former userBox
+  // (.main-userWidget-box) and avatar (img[alt*=avatar]) signals no longer
+  // exist, and accountLink (a[href*="/account"]) was dropped as a false
+  // positive: some regions render a consumer-law footer link to
+  // spotify.com/account/cancel/ on every page, logged in or not.
+  var POSITIVE_LOGIN_SIGNALS = ["sessionTag", "userWidget", "libraryBtn", "createPlaylist", "globalNav", "leftSidebar", "nowPlayingBar", "mainNav"];
   var NEGATIVE_LOGIN_SIGNALS = ["loginBtn", "signupBtn", "signupBar", "loginLink"];
 
   // True if `signals` has any of `keys` set. Null-safe.
@@ -1567,9 +1576,13 @@ function activate(api) {
   // window) flips the gate so real interaction still works.
   //
   // NOTE: the host app installs this same gate at document-start in every frame
-  // (initialization_script_for_all_frames in browse_window.rs) — the primary
-  // defense, since it runs before any page JS on every load. This eval-injected
-  // copy is the in-page backup for hosts that predate that change.
+  // (initialization_script_for_all_frames in browse_window.rs), and hosts from
+  // v1.0.66 also mute the browse window at the engine level (WKWebView
+  // _setPageMuted: / WebView2 IsMuted) — which is the only thing that actually
+  // holds: the JS gate never sees DRM/worker playback paths, and "Go to song
+  // radio" starts playback by design. This eval-injected copy is the in-page
+  // backup for hosts that predate both changes; it cannot be relied on for
+  // silence, and a station scrape WILL be audible on such a host.
   var SCRIPT_MUTE_AUDIO =
     '(function(){' +
       'var gestured=false;' +
@@ -1627,9 +1640,6 @@ function activate(api) {
     'signals.sessionTag=false;' +
     'if(sessionEl){try{var sj=JSON.parse(sessionEl.textContent||"{}");signals.sessionTag=!!sj.accessToken}catch(e){}}' +
     'signals.userWidget=!!qs("[data-testid=\\"user-widget-link\\"]");' +
-    'signals.userBox=!!qs(".main-userWidget-box");' +
-    'signals.avatar=!!qs("img[alt*=\\"avatar\\"], img[alt*=\\"profile\\"]");' +
-    'signals.accountLink=!!qs("a[href*=\\"/account\\"], button[data-testid=\\"user-widget-link\\"]");' +
     'signals.libraryBtn=!!qs("[data-testid=\\"your-library-button\\"], [aria-label=\\"Your Library\\"], [aria-label*=\\"library\\"]");' +
     'signals.createPlaylist=!!qs("[aria-label*=\\"Create\\"]");' +
     'signals.globalNav=!!qs("[data-testid=\\"global-nav-bar\\"], #global-nav-bar");' +
@@ -1641,7 +1651,7 @@ function activate(api) {
     'signals.signupBar=!!qs("[data-testid=\\"signup-bar\\"]");' +
     'signals.loginLink=!!qs("a[href*=\\"/login\\"]");' +
     'console.log("[viboplr-login] signals:",JSON.stringify(signals));' +
-    'var pos=signals.sessionTag||signals.userWidget||signals.userBox||signals.avatar||signals.accountLink||signals.libraryBtn||signals.createPlaylist||signals.globalNav||signals.leftSidebar||signals.nowPlayingBar||signals.mainNav;' +
+    'var pos=signals.sessionTag||signals.userWidget||signals.libraryBtn||signals.createPlaylist||signals.globalNav||signals.leftSidebar||signals.nowPlayingBar||signals.mainNav;' +
     'var neg=signals.loginBtn||signals.signupBtn||signals.signupBar||signals.loginLink;' +
     'var ok=pos&&!neg;' +
     // loggedOut is an AFFIRMATIVE signed-out signal (login/signup UI present).
@@ -1707,8 +1717,21 @@ function activate(api) {
       '}' +
       'return "";' +
     '}' +
-    // Card subtitle: walk up from the playlist link to the card container, then
-    // take the first text that differs from the card name. Best-effort.
+    // Card subtitle, the stable way: Spotify gives every card a title element
+    // [data-encore-id="cardTitle"] with id "card-title-spotify:playlist:<id>-<n>"
+    // and a sibling subtitle with the same id under "card-subtitle-" (verified
+    // 2026-09-21). Derive one from the other — no parent walking, no guessing
+    // which text is the subtitle. Returns "" when the card has no such ids so
+    // the heuristic below can still have a go.
+    'function cardSubtitleById(la){' +
+      'var te=la.querySelector("[data-encore-id=\\"cardTitle\\"]")||la.closest("[data-encore-id=\\"cardTitle\\"]");' +
+      'if(!te||!te.id||te.id.indexOf("card-title-")!==0)return "";' +
+      'var se=document.getElementById("card-subtitle-"+te.id.slice(11));' +
+      'return se?(se.textContent||"").trim():"";' +
+    '}' +
+    // Fallback card subtitle: walk up from the playlist link to the card
+    // container, then take the first text that differs from the card name.
+    // Best-effort, for cards that carry no encore ids.
     'function cardSubtitle(la,nm){' +
       'var card=la;' +
       'for(var up=0;up<5&&card;up++){if(card.parentElement)card=card.parentElement;else break;}' +
@@ -1720,6 +1743,10 @@ function activate(api) {
       '}' +
       'return "";' +
     '}' +
+    // Shelves are keyed by their heading TEXT, not by the enclosing
+    // section[aria-label]: for some shelves Spotify's aria-label is the
+    // description and heading concatenated ("Brand new music from artists you
+    // love. New releases for you"), so it is not a usable name.
     'function isHeading(el){var t=el.tagName;return t==="H1"||t==="H2"||t==="H3"||el.getAttribute("role")==="heading";}' +
     // Report a failure exactly once (used by the setTimeout callbacks below, whose
     // throws would otherwise escape the outer try/catch and hang the scrape).
@@ -1787,7 +1814,7 @@ function activate(api) {
         'if(el.closest("[data-encore-id=\\"cardSubtitle\\"],[id^=\\"card-subtitle\\"]"))continue;' +
         'var nm=(el.textContent||"").trim();' +
         'var img=findImgContainer(el);' +
-        'var sub=cardSubtitle(el,nm);' +
+        'var sub=cardSubtitleById(el)||cardSubtitle(el,nm);' +
         'var _key=_kind+":"+_id;' +
         'var existing=byId[_key];' +
         'if(existing){' +
@@ -1953,7 +1980,11 @@ function activate(api) {
       'function beginScrape(){' +
       // Extract playlist cover. Prefer og:image (server-rendered, canonical for the URL)
       // because in-page <img> selectors can drift to track-row art for algorithmic
-      // playlists like Discover Weekly / Release Radar.
+      // playlists like Discover Weekly / Release Radar. It is not always there
+      // (absent in WKWebView on playlist pages, 2026-09-21), so the DOM rules
+      // below must work on their own. Verified live: the cover <img> sits inside
+      // div[data-testid="playlist-image"] (Liked Songs), and the page has NO
+      // <header> element — the old "main header img" rules never matched.
       'var _coverUrl=null;var _coverRule=null;var _coverElement=null;' +
       'var _coverRuleAttempts=[];' +
       'function _markRule(rule,ok,detail){_coverRuleAttempts.push({rule:rule,ok:!!ok,detail:detail||null})}' +
@@ -1961,17 +1992,61 @@ function activate(api) {
       'if(ogEl){var ogVal=ogEl.getAttribute("content")||"";if(isValidImgUrl(ogVal)){_coverUrl=ogVal;_coverRule="og:image";_coverElement="meta[property=og:image]";_markRule("og:image",true,ogVal.substring(0,120))}else{_markRule("og:image",false,"invalid url: "+ogVal.substring(0,80))}}else{_markRule("og:image",false,"meta tag missing")}' +
       'if(!_coverUrl){' +
         'var coverElSel=null;var coverEl=null;' +
-        'var sels=["[data-testid=\\"playlist-image\\"]","[data-testid=\\"entity-image\\"] img","main header img[draggable=\\"false\\"]","main picture img"];' +
+        'var sels=["[data-testid=\\"playlist-image\\"] img","[data-testid=\\"entity-image\\"] img","main picture img"];' +
         'for(var ci=0;ci<sels.length;ci++){var ce=document.querySelector(sels[ci]);if(ce){coverEl=ce;coverElSel=sels[ci];break}}' +
         'if(coverEl){var cu=coverEl.currentSrc||coverEl.src||null;if(cu&&cu.indexOf("data:")===0)cu=null;if(cu){_coverUrl=cu;_coverRule="dom-selector";_coverElement=coverElSel;_markRule("dom-selector",true,coverElSel)}else{_markRule("dom-selector",false,"matched "+coverElSel+" but no usable src")}}else{_markRule("dom-selector",false,"no selector matched")}' +
       '}' +
-      // Last-resort scope: header only. Never `main section` — that wrapper contains
-      // the tracklist, so bestImg() returns the first track row's album art.
+      // Last resort: the largest <img> on the playlist page that is neither a
+      // track row (the grid) nor the action bar's 30px "watch feed" thumbnail.
+      // The cover is the only big image in the hero; the creator avatar next to
+      // it is 24px, hence the size floor. Never bestImg() over `main` — that
+      // returns the first track row's album art.
       'if(!_coverUrl){' +
-        'var headerEl=document.querySelector("[data-testid=\\"playlist-page\\"] header")||document.querySelector("main header");' +
-        'if(headerEl){var hu=bestImg(headerEl);if(hu){_coverUrl=hu;_coverRule="header-bestImg";_coverElement="header";_markRule("header-bestImg",true,"header found")}else{_markRule("header-bestImg",false,"header had no usable img")}}else{_markRule("header-bestImg",false,"no header element")}' +
+        'var pageEl=document.querySelector("[data-testid=\\"playlist-page\\"]")||document.querySelector("main");' +
+        'var gridEl=document.querySelector("[data-testid=\\"playlist-tracklist\\"]")||document.querySelector("main [role=\\"grid\\"]");' +
+        'var barEl=document.querySelector("[data-testid=\\"action-bar\\"]");' +
+        'if(pageEl){var best=null;var bestW=0;var pimgs=pageEl.querySelectorAll("img");' +
+          'for(var pi=0;pi<pimgs.length;pi++){var im=pimgs[pi];' +
+            'if((gridEl&&gridEl.contains(im))||(barEl&&barEl.contains(im)))continue;' +
+            'var iw=im.naturalWidth||im.width||0;var isrc=im.currentSrc||im.src||"";' +
+            'if(iw>=64&&isValidImgUrl(isrc)&&iw>bestW){best=isrc;bestW=iw}}' +
+          'if(best){_coverUrl=best;_coverRule="page-largest-img";_coverElement="playlist-page img";_markRule("page-largest-img",true,"w="+bestW)}else{_markRule("page-largest-img",false,"no img >=64px outside the tracklist")}' +
+        '}else{_markRule("page-largest-img",false,"no playlist-page element")}' +
       '}' +
       'if(!_coverUrl){_dbg("tracks","cover NOT FOUND",_coverRuleAttempts)}' +
+      // Playlist description. There is no data-testid for it any more; the hero
+      // reads, in document order: type label ("Public Playlist"), the title
+      // ([data-testid="entityTitle"]), the description, then the creator line
+      // ([data-testid="creator-link"]) followed by saves / song count / duration.
+      // So the description is the first free-standing text between the title
+      // and the creator line; a page with no description goes straight from
+      // title to creator (Liked Songs does) and yields "". The numeric guards
+      // are for a page whose creator line carries no testid.
+      'function readDescription(){' +
+        'var t=document.querySelector("main [data-testid=\\"entityTitle\\"]");if(!t)return "";' +
+        'var pageEl=document.querySelector("[data-testid=\\"playlist-page\\"]")||document.querySelector("main");' +
+        'var gridEl=document.querySelector("[data-testid=\\"playlist-tracklist\\"]")||document.querySelector("main [role=\\"grid\\"]");' +
+        'var nodes=pageEl.querySelectorAll("[data-encore-id=\\"text\\"]");var after=false;' +
+        'for(var i=0;i<nodes.length;i++){var s=nodes[i];' +
+          'if(s.contains(t)||t.contains(s)){after=true;continue}' +
+          'if(!after)continue;' +
+          'if((gridEl&&gridEl.contains(s))||s.querySelector("[data-testid=\\"creator-link\\"]"))break;' +
+          'if(s.closest("button,a"))continue;' +
+          'var tx=(s.textContent||"").trim();' +
+          'if(tx.length<2||/^[\\u2022\\u00b7,.]$/.test(tx))continue;' +
+          'if(/^[\\d.,\\s]+\\s*(songs?|saves?|likes?|followers?)$/i.test(tx))continue;' +
+          'if(/^(about\\s+)?(\\d+\\s*(hr|min|sec)\\b\\s*,?\\s*)+$/i.test(tx))continue;' +
+          'return tx.substring(0,500);' +
+        '}' +
+        'return "";' +
+      '}' +
+      // Spotify publishes the list length: the tracklist grid's aria-rowcount is
+      // rows + 1 header row (playlist, Liked Songs and search pages alike;
+      // verified 2026-09-21). That gives the scroll loop a definite "done" and
+      // the UI a real total, where before both only knew that scrolling had
+      // stopped moving. Null when the attribute is missing — then the old
+      // at-bottom / max-steps exit applies unchanged.
+      'function totalRows(){var g=document.querySelector("[data-testid=\\"playlist-tracklist\\"]")||document.querySelector("main [role=\\"grid\\"]");if(!g)return null;var rc=parseInt(g.getAttribute("aria-rowcount")||"",10);return rc>0?rc-1:null}' +
       // Incremental scroll: move one viewport at a time, scrape visible rows at each stop
       'var allOut=[];var seenKeys={};var n=0;var maxSteps=' + maxSteps + ';' +
       'var step=Math.max(sc.clientHeight-50,200);' +
@@ -2000,9 +2075,10 @@ function activate(api) {
                 'if(st&&st!==nm&&st.indexOf(nm)===-1&&nm.indexOf(st)===-1){arts.push(st);break}}}}' +
           'var alEl=r.querySelector("a[href*=\\"/album/\\"]");' +
           'var al=alEl?alEl.textContent.trim():"";' +
-          'var du=r.querySelector("[data-testid=\\"tracklist-duration\\"]");' +
-          'if(!du){var cells3=r.querySelectorAll("[role=\\"gridcell\\"]");' +
-            'if(cells3.length>0){du=cells3[cells3.length-1]}}' +
+          // Duration is the last gridcell's "m:ss" text (the tracklist-duration
+          // testid no longer exists on any tracklist).
+          'var du=null;var cells3=r.querySelectorAll("[role=\\"gridcell\\"]");' +
+          'if(cells3.length>0){du=cells3[cells3.length-1]}' +
           'var dur="";if(du){var dt=du.textContent.trim();if(/^\\d+:\\d{2}$/.test(dt))dur=dt}' +
           'var imgUrl=bestImg(r);' +
           'allOut.push({name:nm,artist:arts.join(", "),album:al,duration:dur,imageUrl:imgUrl,spotifyId:spId});' +
@@ -2013,14 +2089,17 @@ function activate(api) {
       'function tick(){try{' +
         'parseVisibleRows();n++;' +
         'var atBottom=sc.scrollTop+sc.clientHeight>=sc.scrollHeight-10;' +
-        'if(n%5===0)_dbg("tracks","scrolling",{tick:n,found:allOut.length,scrollTop:sc.scrollTop,scrollH:sc.scrollHeight,atBottom:atBottom});' +
+        // Definite finish: every row the grid says it has was parsed. A list
+        // with the same track twice never reaches its total (rows dedupe by
+        // Spotify id) and exits at the bottom as before.
+        'var total=totalRows();var complete=total!==null&&allOut.length>=total;' +
+        'if(n%5===0)_dbg("tracks","scrolling",{tick:n,found:allOut.length,total:total,scrollTop:sc.scrollTop,scrollH:sc.scrollHeight,atBottom:atBottom});' +
         // Emit a running track count so the UI can show progress without waiting
         // for the full scrape (large playlists like Liked Songs can take minutes).
-        'try{window.__viboplr.send("tracks-progress",{playlistId:"' + playlistId + '",found:allOut.length,tracks:allOut,gen:_gen})}catch(e){}' +
-        'if(atBottom||n>=maxSteps){' +
+        'try{window.__viboplr.send("tracks-progress",{playlistId:"' + playlistId + '",found:allOut.length,total:total,tracks:allOut,gen:_gen})}catch(e){}' +
+        'if(atBottom||complete||n>=maxSteps){' +
           'parseVisibleRows();' +
-          'var descEl=document.querySelector("[data-testid=\\"playlist-description\\"]")||document.querySelector("main [data-testid=\\"entityTitle\\"] ~ span");' +
-          'var desc=descEl?descEl.textContent.trim():"";' +
+          'var desc=readDescription();' +
           'if(allOut.length===0){' +
             'var diag={rows:document.querySelectorAll("[role=\\"row\\"]").length,' +
               'trackLinks:document.querySelectorAll("a[href*=\\"/track/\\"]").length,' +
@@ -2029,8 +2108,8 @@ function activate(api) {
               'mainText:(document.querySelector("main")?document.querySelector("main").textContent:"").substring(0,200)};' +
             '_dbg("tracks","=== EMPTY ' + playlistId + ' - page diagnostics",diag);' +
           '}' +
-          '_dbg("tracks","=== DONE ' + playlistId + '",{parsed:allOut.length,steps:n,gen:_gen,desc:desc.substring(0,80),coverUrl:_coverUrl,coverRule:_coverRule,coverElement:_coverElement});' +
-          'window.__viboplr.send("tracks",{playlistId:"' + playlistId + '",tracks:allOut,description:desc,coverUrl:_coverUrl,coverRule:_coverRule,coverElement:_coverElement,coverRuleAttempts:_coverRuleAttempts,gen:_gen});' +
+          '_dbg("tracks","=== DONE ' + playlistId + '",{parsed:allOut.length,total:total,complete:complete,steps:n,gen:_gen,desc:desc.substring(0,80),coverUrl:_coverUrl,coverRule:_coverRule,coverElement:_coverElement});' +
+          'window.__viboplr.send("tracks",{playlistId:"' + playlistId + '",tracks:allOut,total:total,description:desc,coverUrl:_coverUrl,coverRule:_coverRule,coverElement:_coverElement,coverRuleAttempts:_coverRuleAttempts,gen:_gen});' +
         '}else{sc.scrollTop+=step;setTimeout(tick,600)}' +
       '}catch(e){' +
         '_dbg("tracks","=== ERROR in tick ' + playlistId + '",{error:""+e,step:n});' +
@@ -2099,9 +2178,11 @@ function activate(api) {
 
   // Is the document showing exactly the seed's track page? Matched as the whole
   // path (minus Spotify's optional /intl-xx prefix and a trailing slash), not as
-  // a substring: a song radio lives at /station/track/{id}, which *contains* the
-  // track path, so "still on the track page?" and "station open?" would both be
-  // true under a naive indexOf.
+  // a substring. Spotify's client-side router knows /station/track/{id}, which
+  // *contains* the track path, so under a naive indexOf "still on the track
+  // page?" and "station open?" could both be true. (Where the click actually
+  // lands today is a real /playlist/{id} page — see SPEC.md "Start Spotify
+  // radio"; the exact match is right either way.)
   var TRACK_PAGE_HELPER =
     'function _isTrackPage(id){' +
       'var p=location.pathname.replace(/^\\/intl-[^\\/]+/,"");' +
@@ -3641,7 +3722,10 @@ function activate(api) {
   // Liked Songs can hold thousands of rows: raise the scroll-step cap well
   // above the playlist default, and time out on *stall* (no new rows found for
   // this long) rather than total duration — a big list legitimately takes
-  // minutes and progress ticks arrive every scroll step.
+  // minutes and progress ticks arrive every scroll step. The normal finish is
+  // the grid's aria-rowcount (the scraper stops once it has parsed that many
+  // rows, and reports it as `total`); the stall timer is the fallback for a
+  // page that stopped rendering rows short of it.
   var LIKED_MAX_STEPS = 500;
   var LIKED_STALL_MS = 45000;
   // setTrackLikesBatch chunk size — keeps the settings panel's progress line
@@ -3683,10 +3767,13 @@ function activate(api) {
           if (state.likedImportCancelled) { settle(reject, new Error("Cancelled")); return; }
           if (msg.type === "tracks-progress") {
             var found = msg.data.found || 0;
+            var total = msg.data.total || 0;
             if (found !== lastCount) {
               lastCount = found;
               arm();
-              setLikedStage("Reading Liked Songs… " + found + " track" + (found === 1 ? "" : "s") + " so far");
+              setLikedStage(total
+                ? "Reading Liked Songs… " + found + " of " + total + " track" + (total === 1 ? "" : "s")
+                : "Reading Liked Songs… " + found + " track" + (found === 1 ? "" : "s") + " so far");
             }
             return;
           }
