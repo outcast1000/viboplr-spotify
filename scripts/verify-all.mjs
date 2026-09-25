@@ -405,7 +405,13 @@ async function main() {
         const shot = join(tmpdir(), `viboplr-spotify-verify-${check.id.replace(/[^\w-]/g, "_")}.png`);
         const shotOk = await page.screenshot({ path: shot }).then(() => true, () => false);
         const seen = await page.evaluate(() => ((document.querySelector("main") || document.body).innerText || "").replace(/\s+/g, " ").trim().slice(0, 160)).catch(() => "");
-        results.push({ id: check.id, status: "fail", ms: Date.now() - start, detail, protects: check.protects, url: page.url(), screenshot: shotOk ? shot : null, pageText: seen });
+        // Spotify's own error page means Spotify refused the request (outage,
+        // or rate limiting after a burst of runs) — say so before anyone goes
+        // hunting for a selector that didn't move.
+        const spotifyError = /Something went wrong/i.test(seen)
+          ? " [Spotify showed its \"Something went wrong\" page — an outage or rate limiting; re-run later before touching selectors]"
+          : "";
+        results.push({ id: check.id, status: "fail", ms: Date.now() - start, detail: detail + spotifyError, protects: check.protects, url: page.url(), screenshot: shotOk ? shot : null, pageText: seen });
         console.log(`\r✗ ${check.id}: ${detail}`);
       }
     }

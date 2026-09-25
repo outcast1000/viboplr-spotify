@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.22.0
 - **Play the Full Album (Spotify)** on any track's right-click menu: finds the
   track's album on Spotify — by album name, or through the track itself when it
   has no album tag or the album is a compilation — scrapes the whole tracklist
@@ -12,7 +12,9 @@
   `get_track_plays` / `get_artist_listeners`. Looked up in a hidden window that
   never pops up for sign-in, one at a time, and only for an exact artist match
   — a wrong artist's numbers are never shown. Spotify has no per-track listener
-  figure; that stays Last.fm's.
+  figure; that stays Last.fm's. The track-page line needs a Viboplr build
+  that renders every `title_line` provider (the next app release); older
+  builds show the artist line only.
 - **`npm run verify:all`** checks every Spotify service the plugin depends on
   against the live site — home shelves, playlists, Liked Songs, search, radio,
   albums, plays, listeners — and then runs the same features end to end through
