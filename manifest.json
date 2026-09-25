@@ -3,7 +3,7 @@
   "name": "Spotify",
   "version": "1.21.0",
   "author": "Viboplr",
-  "description": "Browse your Spotify Music home — playlists grouped by shelf — and search Spotify for songs",
+  "description": "Browse your Spotify Music home — playlists grouped by shelf — search Spotify for songs, play full albums, and see Spotify play counts and monthly listeners",
   "icon": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.5 16c2.5-1 5.5-1 7.5 0M7 13c3-1.5 7.5-1.5 10.5 0M5.5 10c4-2 9.5-2 13.5 0",
   "minAppVersion": "0.9.98",
   "homepage": "https://github.com/outcast1000/viboplr-spotify",
@@ -20,7 +20,7 @@
   ],
   "contributes": {
     "assistant": {
-      "instructions": "Browse the user's scraped Spotify home (playlists grouped by section — Daily Mixes, Made For You, …). Content comes from periodic syncs, not live Spotify. TO PLAY: use the host's home-shelf verbs (GET /v1/home/shelves → POST /v1/home/shelf → POST /v1/home/play) — they handle lazy track resolution and backfill; playback rides other resolvers (usually yt-dlp). These tools are for READING the catalog first: status (is anything synced), list_playlists, get_playlist_tracks (serves the cache, scraping lazily on a miss — can take tens of seconds).",
+      "instructions": "Browse the user's scraped Spotify home (playlists grouped by section — Daily Mixes, Made For You, …). Content comes from periodic syncs, not live Spotify. TO PLAY: use the host's home-shelf verbs (GET /v1/home/shelves → POST /v1/home/shelf → POST /v1/home/play) — they handle lazy track resolution and backfill; playback rides other resolvers (usually yt-dlp). These tools are for READING the catalog first: status (is anything synced), list_playlists, get_playlist_tracks (serves the cache, scraping lazily on a miss — can take tens of seconds). Catalog lookups (live, each opens a hidden Spotify page — 10–30s): get_album_tracks (an album's full tracklist in order), get_track_plays (Spotify's all-time play count for a song), get_artist_listeners (an artist's monthly listeners). Spotify shows no per-track listener figure; per-track listeners are a Last.fm stat.",
       "tools": [
         {
           "name": "status",
@@ -54,9 +54,85 @@
               "id"
             ]
           }
+        },
+        {
+          "name": "get_album_tracks",
+          "description": "An album's full tracklist from Spotify, in album order. Give the album name, or a track title to use that track's album. Live lookup — slow (10–30s)",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "artist": {
+                "type": "string",
+                "description": "The album's (or track's) artist"
+              },
+              "album": {
+                "type": "string",
+                "description": "Album name"
+              },
+              "title": {
+                "type": "string",
+                "description": "A track on the album — used when the album name is unknown, or as the fallback for compilations"
+              }
+            },
+            "required": [
+              "artist"
+            ]
+          }
+        },
+        {
+          "name": "get_track_plays",
+          "description": "Spotify's all-time play count for a song. found:false when Spotify has no match or shows no count (it hides counts under ~1,000 plays). Live lookup — slow",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "artist": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artist",
+              "title"
+            ]
+          }
+        },
+        {
+          "name": "get_artist_listeners",
+          "description": "An artist's current monthly listeners on Spotify (exact name match only). Live lookup — slow",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "artist": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artist"
+            ]
+          }
         }
       ]
     },
+    "informationTypes": [
+      {
+        "id": "spotify_track_plays",
+        "name": "Spotify Plays",
+        "description": "All-time play count on Spotify",
+        "entity": "track",
+        "displayKind": "title_line",
+        "ttl": 604800
+      },
+      {
+        "id": "spotify_artist_listeners",
+        "name": "Spotify Listeners",
+        "description": "Monthly listeners on Spotify",
+        "entity": "artist",
+        "displayKind": "title_line",
+        "ttl": 604800
+      }
+    ],
     "sidebarItems": [
       {
         "id": "spotify",

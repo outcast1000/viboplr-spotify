@@ -311,6 +311,70 @@ rides the host's stream-resolver chain exactly like a playlist row. Verified
 against the live DOM by `npm run verify:search`, which also fails when most rows
 come back without an artist or a Spotify id (selector drift).
 
+### Catalog lookups — album tracklist, plays, monthly listeners
+
+Three features share one shape: **search → pick an entity → open its page →
+read one thing**, driven through a single browse window by `makeStepper`
+(eval a page script, re-fire it every 3s until the page answers, per-step
+timeout). All page scripts and pickers live in the SCRAPE-SCRIPTS block, so
+`npm run verify:all` runs them unchanged against the live site.
+
+- **Page scripts report, host code decides.** `scriptSearchCandidates` posts
+  every entity it can identify on a `/search/{q}/{facet}` page (track rows with
+  their `/album/` link; album and artist cards via `[data-encore-id="cardTitle"]`)
+  and nothing else. The choice is made by pure, unit-tested pickers
+  (`pickTrackCandidate` / `pickAlbumCandidate` / `pickArtistCandidate`) over
+  `normalizeName` (accents, case, `&`, a leading "the") and `coreTitle`
+  (edition noise: `(Remastered)`, ` - 2007 Remaster`). The artist must match —
+  lead name of a credit string counts — so a wrong artist's numbers are never
+  shown; a miss is `not_found`.
+- **Every page script checks its own page.** The first eval after a
+  navigation usually lands on the page being left, and an album page has track
+  rows of its own. `scriptSearchCandidates` only runs on its facet's search
+  URL; the track/artist/page-ready scripts match `location.pathname` exactly
+  (`PATH_HELPER`, `/intl-xx` stripped).
+- **Spotify's "No songs found for …" page is reported** (`noResults`), because
+  after a burst of searches Spotify throttles by answering with nothing. The
+  plugin logs it, and the harness says "throttled?" instead of "selectors
+  drifted".
+
+**Album tracklist** (`lookupSpotifyAlbum`, menu item **Play the Full Album
+(Spotify)** + assistant tool `get_album_tracks`): with an album name, search the
+`/albums` facet and pick the card; otherwise, or when that misses (a
+compilation's card says "Various Artists"), search `/tracks` and follow the
+matching row's album link (album name as a tie-break hint). Then open
+`/album/{id}`, wait for a real track row (`scriptWaitForPage`), and run the
+shared `scriptScrollThenScrape` with `kind: "album"`; `fillAlbumName` backfills
+the album column the album page omits. The tracklist's `aria-rowcount` makes the
+scrape definite (12/12 on OK Computer). Results are memoized for an hour. The
+menu action blocks behind the host loading modal — the clicked track is rarely
+the opener, so there is no head to start early — then `playTracks` with
+`source: "album"` and `track_number` in album order.
+
+**Plays / monthly listeners** (info types `spotify_track_plays` and
+`spotify_artist_listeners`, both `title_line`, 7-day TTL; tools
+`get_track_plays` / `get_artist_listeners`): the track page prints the all-time
+count in `[data-testid="playcount"]` (absent under ~1,000 plays → `not_found`);
+the artist hero prints "N monthly listeners" twice — compact and a
+visually-hidden exact figure — and `pickListenerCount` prefers the exact one.
+Album pages show **no** per-track plays, and Spotify has **no** per-track
+listener figure (that is Last.fm's stat), so neither is offered.
+
+These run in the **background** whenever a detail page opens, so:
+- `withSpotifyWindow({ quiet: true })` never surfaces the window: a signed-out
+  page rejects with `SIGNED_OUT` (and `signedOutUntil` skips lookups for 10
+  minutes; any confirmed login clears it), and a login check that never
+  settles gives up after 25s.
+- `infoLookup` serializes them (one queue), waits up to 90s for a user action's
+  window instead of failing "busy", and de-duplicates by key — the artist page
+  asks for its title line from two components at once, and they share one
+  window (asserted by `plugin:track-plays`).
+- They are **paced**: at least 4s apart, and after 3 consecutive Spotify
+  "no results" pages (one is often just an obscure track) background lookups
+  pause for 10 minutes (`throttledUntil`). They fire on every detail page, and
+  a throttled Spotify search would also break the user's own search and radio.
+  The user-initiated album action is not paced.
+
 ### Liked Songs import (`importLikedSongs`)
 
 Settings-panel action that turns the user's Spotify **Liked Songs** into Viboplr
@@ -483,6 +547,7 @@ on cards and the detail header. A failed track scrape is retried up to twice
 | Action | Context | Behavior |
 |--------|---------|----------|
 | `start-spotify-radio` | Any track’s right-click menu (library / queue / playlist / plugin / search) | `startSpotifyRadio(title, artist)` — plays the seed immediately, then search → go-to-radio → scrape → append the station (legacy hosts: scrape first, then replace the queue; see *Start Spotify radio*) |
+| `play-spotify-album` | Any track’s right-click menu | `playSpotifyAlbum(target)` — find the track's album on Spotify (by `albumTitle`, else via the track row), scrape it, replace the queue in album order (see *Catalog lookups*) |
 
 ## Injected Scripts
 
@@ -498,13 +563,18 @@ on cards and the detail header. A failed track scrape is retried up to twice
 | `scriptGoToRadio(gen, trackId[, budgetMs])` | On the seed's track page only: poll for the `…` menu, click "Go to song radio" → `radio-go` | `button[data-testid="more-button"]` + `[role="menuitem"]` matching `/radio/i` |
 | `scriptWaitForSearchResults(gen[, budgetMs])` | On the search `/tracks` page: poll until a real track row has rendered → `search-ready {ok,url}` (or `{error,loggedOut}`); gates the row parser, which the page's placeholder rows would otherwise satisfy early | `main [role="row"] a[href*="/track/"]` |
 | `scriptWaitForStation(gen, trackId[, budgetMs])` | Wait until the page has left the seed's track page → `radio-station {url}` | `location.pathname` vs `/track/{id}` (exact, `/intl-xx` stripped — the station lives at `/station/track/{id}`) |
+| `scriptSearchCandidates(gen, facet[, budgetMs])` | On `/search/{q}/{facet}` only: every track row / album card / artist card → `search-candidates {candidates, noResults?, loggedOut?}` | `[role="row"]` links; `[data-testid^="search-category-card-"]` + `[data-encore-id="cardTitle"]` |
+| `scriptWaitForPage(gen, path, withTracklist)` | Wait until the document is `path` (and has a real track row) → `page-ready` | `location.pathname`; tracklist `a[href*="/track/"]` |
+| `scriptReadTrackPlays(gen, trackId)` | On `/track/{id}`: the all-time play count → `track-plays {raw}` / `{missing}` | `[data-testid="playcount"]` |
+| `scriptReadArtistListeners(gen, artistId)` | On `/artist/{id}`: every "… monthly listeners" text → `artist-listeners {texts}` | text match in `main` (English UI) |
 | `SCRIPT_LOGIN_BANNER` | Inject "please sign in" banner when not logged in | fixed-position `<div>` prepended to `<html>` |
 | `SCRIPT_REMOVE_LOGIN_BANNER` | Remove the sign-in banner once logged in | by element id |
 
 ## Known Limitations
 
 - Spotify OAuth is non-functional; the plugin relies on the user being logged in via the browser session
-- DOM selectors may break when Spotify updates their web app
+- DOM selectors may break when Spotify updates their web app — `npm run verify:all` checks every one of them (see DEVELOPING.md §5b)
+- Monthly-listener parsing matches English UI text ("monthly listeners"), like the radio flow's menu-label match
 - Headless scraping requires an existing login session (cookies persisted by the browse window)
 - Track matching for playback uses title+artist fuzzy matching via fallback resolution, not Spotify track IDs
 - **Lazy shelf rendering:** each shelf is a single horizontal row (~10 cards) with

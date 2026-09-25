@@ -9,6 +9,7 @@
     "verify:radio": "node scripts/verify-radio.mjs",
     "verify:liked": "node scripts/verify-liked.mjs",
     "verify:search": "node scripts/verify-search.mjs",
+    "verify:all": "node scripts/verify-all.mjs",
     "test": "node --test \"scripts/**/*.test.mjs\""
   },
   "devDependencies": {

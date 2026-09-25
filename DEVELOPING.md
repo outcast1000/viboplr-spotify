@@ -209,6 +209,58 @@ shelves, 0 cards, 0 tracks, or a shape regression), so
 
 This verifies scraping only — not host-app UI rendering or plugin load.
 
+### Checking every Spotify service at once — `npm run verify:all`
+
+Spotify can change its markup at any time, so there is one command that checks
+everything the plugin reads from it, **before a release and whenever a feature
+misbehaves**:
+
+```bash
+npm run verify:all                               # headed (first run: log in)
+VERIFY_HEADLESS=1 npm run verify:all             # after one headed login
+VERIFY_CHANNEL=chromium npm run verify:all       # no Google Chrome installed
+npm run verify:all -- --only album-by-name,track-plays
+VERIFY_REPORT=report.json npm run verify:all     # machine-readable result
+```
+
+It runs two layers, and each check passes or fails on its own (a check that
+needs another's output is skipped if that one failed); the process exits 1 on
+any failure:
+
+| Check | Protects |
+|---|---|
+| `home-shelves`, `playlist-tracks` | Sync and opening a playlist |
+| `liked-songs` | Import Liked Songs |
+| `song-search` | The search box + Cmd+K provider |
+| `radio` | Start Spotify radio |
+| `album-by-name`, `album-via-track` | Play the Full Album (Spotify), `get_album_tracks` |
+| `track-plays`, `artist-listeners` | The Spotify Plays / Listeners info sections |
+| `plugin:*` | The same features **end to end through the plugin itself** |
+
+The first layer drives the page scripts and pure pickers extracted from
+`index.js`, the way `verify:scrape` does. The `plugin:*` layer loads the real
+`index.js` into `scripts/lib/fake-host.mjs` — a stand-in host whose browse
+window is a Playwright page — and calls the handlers the plugin registered
+(`informationTypes.onFetch`, `contextMenu.onAction`, `assistant.onTool`), so
+the login gate, the step loop, the lookup queue and dedupe run exactly as
+shipped. It is not the host app (no Tauri, no WKWebView), but it is the plugin.
+
+Every failure names the plugin function to look at, what it affects, the URL,
+what the page said, and a screenshot path. Two failure shapes to recognise:
+
+- **"Spotify answered 'no results' … not a selector problem"** — Spotify
+  throttles search after a burst of runs by answering with its empty-results
+  page. Wait a few minutes (15 was enough on 2026-09-25) and re-run. Don't
+  run the harness in a tight loop.
+- **"… selectors drifted (scriptX)"** — the markup moved. Open the screenshot,
+  inspect the live page, fix the script named, run `npm test`, re-run.
+
+Fixtures default to Radiohead / OK Computer / Karma Police; override with
+`VERIFY_ARTIST`, `VERIFY_ALBUM`, `VERIFY_TRACK`, `RADIO_QUERY`, `SEARCH_QUERY`.
+The older single-feature harnesses (`verify:scrape`, `verify:radio`,
+`verify:search`, `verify:liked`) still work and print more detail for their
+one feature.
+
 ---
 
 ## 6. Cleaning up (`deactivate`)

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+- **Play the Full Album (Spotify)** on any track's right-click menu: finds the
+  track's album on Spotify — by album name, or through the track itself when it
+  has no album tag or the album is a compilation — scrapes the whole tracklist
+  and plays it in album order. Also an assistant tool, `get_album_tracks`.
+- **Spotify play counts and monthly listeners** on detail pages: a track shows
+  its all-time Spotify plays and an artist its monthly listeners, next to the
+  Last.fm line (info types `spotify_track_plays` / `spotify_artist_listeners`,
+  cached 7 days; turn them off in Settings → Providers). Also assistant tools
+  `get_track_plays` / `get_artist_listeners`. Looked up in a hidden window that
+  never pops up for sign-in, one at a time, and only for an exact artist match
+  — a wrong artist's numbers are never shown. Spotify has no per-track listener
+  figure; that stays Last.fm's.
+- **`npm run verify:all`** checks every Spotify service the plugin depends on
+  against the live site — home shelves, playlists, Liked Songs, search, radio,
+  albums, plays, listeners — and then runs the same features end to end through
+  the real plugin code in a fake host. Failures name the function to fix and
+  save a screenshot; Spotify's search throttling is reported as such rather
+  than as broken selectors.
+
 ## v1.21.0
 - **Silence is now the host's job — and it needed to be.** The eval'd autoplay
   gate can't hold: it never sees DRM/worker playback, and "Go to song radio"

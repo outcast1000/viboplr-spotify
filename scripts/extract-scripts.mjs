@@ -41,6 +41,24 @@ export function extractScripts(indexPath) {
     scriptWaitForStation: sandbox.scriptWaitForStation,
     // Song search (results-rendered gate before the shared row parser).
     scriptWaitForSearchResults: sandbox.scriptWaitForSearchResults,
+    // Catalog lookups (album tracklist, track plays, artist listeners): the
+    // page scripts plus the pure pickers/parsers the plugin runs on their
+    // output — the harness uses the same ones, so a pass means the plugin's
+    // own matching works on today's pages.
+    searchUrl: sandbox.searchUrl,
+    scriptNavigateTo: sandbox.scriptNavigateTo,
+    scriptSearchCandidates: sandbox.scriptSearchCandidates,
+    scriptWaitForPage: sandbox.scriptWaitForPage,
+    scriptReadTrackPlays: sandbox.scriptReadTrackPlays,
+    scriptReadArtistListeners: sandbox.scriptReadArtistListeners,
+    normalizeName: sandbox.normalizeName,
+    coreTitle: sandbox.coreTitle,
+    artistMatches: sandbox.artistMatches,
+    pickTrackCandidate: sandbox.pickTrackCandidate,
+    pickAlbumCandidate: sandbox.pickAlbumCandidate,
+    pickArtistCandidate: sandbox.pickArtistCandidate,
+    parseCount: sandbox.parseCount,
+    pickListenerCount: sandbox.pickListenerCount,
   };
 
   for (const [k, v] of Object.entries(out)) {

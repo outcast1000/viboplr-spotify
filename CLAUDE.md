@@ -45,6 +45,13 @@ code)` inside the app's WebView. Consequences:
 - **Release zip layout:** `spotify.zip` MUST have `manifest.json` at its ROOT (the
   host's installer does not strip a wrapper folder). `scripts/package.sh` guarantees
   this — never hand-zip a folder.
+- **Spotify's markup changes without notice.** `npm run verify:all` checks every
+  service the plugin reads (and runs the features end to end through the real
+  `index.js` in a fake host) — run it before every release and whenever a
+  feature misbehaves; see `DEVELOPING.md` §5b. New page scripts go inside the
+  SCRAPE-SCRIPTS markers and get exported from `scripts/extract-scripts.mjs`
+  so the harness runs them; matching/parsing logic stays pure there so
+  `npm test` can pin it.
 - **No browser/Tauri dev harness exists** for plugins. The realistic dev loop is to
   install/symlink this folder into the host app and reload. See `DEVELOPING.md`.
 
