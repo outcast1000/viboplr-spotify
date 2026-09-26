@@ -177,7 +177,7 @@ it (or clicks "Refresh tracks"):
 
 ### Start Spotify radio (`startSpotifyRadio`)
 
-A **universal track context-menu item** ("Start Spotify radio", registered via
+A **universal track context-menu item** ("Start radio", shown as "Spotify: Start radio"; registered via
 `api.contextMenu.registerItem` on the `track` target) starts a Spotify radio
 seeded from any track in the app. The app-side `PluginContextMenuTarget` carries
 only `title` + `artistName` (no Spotify id), so the flow searches for the seed

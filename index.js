@@ -3623,7 +3623,7 @@ function activate(api) {
   if (api.contextMenu && typeof api.contextMenu.registerItem === "function") {
     api.contextMenu.registerItem({
       id: "start-spotify-radio",
-      label: "Start Spotify radio",
+      label: "Start radio",
       targets: ["track"],
     });
   }
@@ -3836,7 +3836,7 @@ function activate(api) {
   if (api.contextMenu && typeof api.contextMenu.registerItem === "function") {
     api.contextMenu.registerItem({
       id: "play-spotify-album",
-      label: "Play the Full Album (Spotify)",
+      label: "Play the Full Album",
       targets: ["track"],
     });
   }
