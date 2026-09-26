@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.22.1
+- **Menu items no longer name Spotify themselves:** "Start radio" and "Play
+  the Full Album". Apps that prefix plugin menu items with the plugin name show
+  them as "Spotify: Start radio" / "Spotify: Play the Full Album"; older apps
+  show the bare labels.
+
 ## v1.22.0
 - **Play the Full Album (Spotify)** on any track's right-click menu: finds the
   track's album on Spotify — by album name, or through the track itself when it
