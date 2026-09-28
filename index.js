@@ -744,7 +744,58 @@ function activate(api) {
     renderView();
   }
 
+  // Pure: the host-drawn header over the view (api.ui.setViewHeader, host
+  // >= 1.0.77). One status word says whether the library is synced; the
+  // subtitle is what's in it. The live sync progress and any error text stay
+  // in the view's toolbar, which is where Sync / Cancel live.
+  //   h: { status, refreshing, playlists, shelves, lastSync (formatted), lastCheckFailed }
+  function viewHeaderFor(h) {
+    var subtitle = "Your Spotify home, playlists and song search";
+    if (h.playlists > 0) {
+      subtitle = h.playlists + (h.playlists === 1 ? " playlist" : " playlists") +
+        " on " + h.shelves + (h.shelves === 1 ? " shelf" : " shelves") +
+        (h.lastSync ? " · last sync " + h.lastSync : "");
+    }
+    var status;
+    if (h.status === "waiting-login" || h.status === "running" || h.refreshing) {
+      // waiting-login opens every sync (even when already signed in), so it
+      // reads as syncing; the toolbar says when a sign-in is really needed.
+      status = { variant: "muted", label: "Syncing…" };
+    } else if (h.status === "error") {
+      status = { variant: "error", label: "Sync failed" };
+    } else if (h.lastCheckFailed) {
+      status = { variant: "warning", label: "Last sync failed" };
+    } else if (h.playlists > 0) {
+      status = { variant: "success", label: "Synced" };
+    } else {
+      status = { variant: "muted", label: "Not synced" };
+    }
+    return { subtitle: subtitle, status: status };
+  }
+
+  var hasViewHeader = !!(api.ui && typeof api.ui.setViewHeader === "function");
+
+  // Sends the header only when it changed: render() runs on every sync stage
+  // and each setViewHeader re-renders the host.
+  var lastViewHeader = null;
+  function pushViewHeader() {
+    if (!hasViewHeader) return; // older hosts
+    var header = viewHeaderFor({
+      status: state.status,
+      refreshing: state.refreshing,
+      playlists: state.playlists.length,
+      shelves: state.sections.length,
+      lastSync: formatSyncTime(state.lastCheckAt),
+      lastCheckFailed: / error/.test(state.lastCheckResult || ""),
+    });
+    var key = JSON.stringify(header);
+    if (key === lastViewHeader) return;
+    lastViewHeader = key;
+    api.ui.setViewHeader("spotify", header);
+  }
+
   function renderView() {
+    pushViewHeader();
     if (state.activeTab === "settings") { renderSettingsTab(); return; }
     if (state.activeTab === "debug") { renderDebugTab(); return; }
     if (state.currentView === "playlist") { renderPlaylist(); return; }
@@ -834,6 +885,10 @@ function activate(api) {
     } else if (state.status === "error") {
       statusText = state.errorMessage;
       statusVariant = "error";
+    } else if (hasViewHeader) {
+      // The host header already shows the playlist count and last sync, so
+      // only a sync that found nothing needs explaining here.
+      if (state.refreshSummary && state.refreshSummary.indexOf("Synced ") !== 0) statusText = state.refreshSummary;
     } else if (state.refreshSummary) {
       statusText = state.refreshSummary;
     } else if (state.lastCheckResult) {
@@ -3170,12 +3225,14 @@ function activate(api) {
     // this refresh's browse window.
     cancelPrefetch();
     state.refreshing = true;
+    pushViewHeader();
 
     syncPlaylists(false, "auto-refresh").then(function (result) {
       state.refreshing = false;
       if (!result) {
         recordCheckResult(0, 1);
         api.ui.setBadge("spotify", { type: "dot", variant: "error" });
+        pushViewHeader();
         return;
       }
       var applied = applySyncResult(result);
@@ -3192,6 +3249,7 @@ function activate(api) {
       recordCheckResult(0, 1);
       console.error("Silent refresh failed:", err);
       api.ui.setBadge("spotify", { type: "dot", variant: "error" });
+      pushViewHeader();
     });
   }
 

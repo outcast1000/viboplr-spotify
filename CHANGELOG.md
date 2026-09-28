@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.24.0
+- **Status in the app's plugin header.** On Viboplr 1.0.77 and later, the
+  strip the app draws above the Spotify view shows what the plugin has:
+  "24 playlists on 6 shelves · last sync 29 Sep, 14:32", with one word for the
+  state — Synced, Syncing…, Sync failed, Last sync failed or Not synced. It
+  stays visible on the Settings and Debug tabs too. The toolbar keeps Sync /
+  Cancel, the live progress line and any error text, and no longer repeats the
+  playlist count. Older app versions are unchanged.
+
 ## v1.23.0
 - **Settings moved into the Spotify view.** The view now has three tabs:
   **Browse** (home, search, playlists), **Settings** (auto-refresh, show
