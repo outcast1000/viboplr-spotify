@@ -77,7 +77,8 @@ tracks through Viboplr's fallback resolution.
 ### Stacked Shelves (the main view)
 - The view mirrors the Spotify Music home page: one **section per shelf**, stacked
   vertically, each as a heading (the shelf name) + an optional gray description
-  line + a playlist **card grid**. There are no tabs and no user-configured sections.
+  line + a playlist **card grid**. There are no per-section tabs and no
+  user-configured sections (the Browse / Settings / Debug tabs are view-level).
 - Sections (their names, order, and descriptions) are **derived from the scrape**,
   not configured. Empty sections are skipped.
 - Cards show the scraped Spotify subtitle (e.g. "With X, Y…") until tracks are
@@ -92,14 +93,41 @@ tracks through Viboplr's fallback resolution.
   "Loading tracks…" placeholder until the scrape completes.
 - Track row list
 
-### Settings Panel (`spotify-settings`)
-- Auto-refresh interval select (Off / 6h / 12h / 24h / 2 days / weekly)
-- Show browser window during refresh toggle
-- Debug logging toggle (writes a per-run `logs/YYYYMMDD-HHMMSS.log`)
-- Include albums in sync toggle
-- **Liked Songs** section: "Import Liked Songs" (see *Liked Songs import* below);
-  shown only when the host exposes the batch like APIs
-- Step-by-step debugger: Check Login → Scrape Shelves → Scrape Tracks
+### View tabs (Browse / Settings / Debug)
+The Spotify view opens with a hoisted `tabs` bar (`spotify-tab`, dispatches
+`{ tabId }`); `state.activeTab` is in-memory and always starts on **Browse**.
+There is no host settings panel any more — the plugin declares no
+`settingsPanel`, so everything lives in its own view.
+- **Browse** — the home shelves, search results and playlist detail views
+  described above (`state.currentView`). Any navigation into them (go-home,
+  opening a playlist, a search) switches back to Browse.
+- **Settings** — auto-refresh interval select (Off / 6h / 12h / 24h / 2 days /
+  weekly), show-browser-during-refresh toggle, include-albums-in-sync toggle,
+  and the **Liked Songs** section ("Import Liked Songs", see *Liked Songs
+  import* below; shown only when the host exposes the batch like APIs).
+- **Debug** — debug logging toggle (writes a per-run
+  `logs/YYYYMMDD-HHMMSS.log`), the step-by-step debugger (Check Login → Scrape
+  Shelves → Scrape Tracks) and Diagnostics (last run report).
+
+`renderSettings()` re-renders only while Settings or Debug is showing, so the
+many state changes that call it cost nothing on Browse. Because the view is
+tabbed, the plugin handles the host's `host:search` action itself (Cmd+K
+"search on Spotify"): it runs the search and switches to Browse, instead of
+relying on the host seeding the first search box, which the other tabs don't have.
+
+### Now Playing info: "Spotify listeners"
+A Now Playing info item (`api.nowPlayingInfo`, id `listeners`, **off by
+default** — enable it in Settings → Playback → Now playing info) showing the
+current track's artist's monthly listeners ("16.7M monthly listeners on
+Spotify"). The host gives an item 5s and resolves it once per track, while a
+lookup takes 10–30s, so it answers from what is already known: a session memo
+(24h), then the host's cached `spotify_artist_listeners` value (fresh within its
+7-day ttl, via `api.informationTypes.getValue`). Otherwise it starts the normal
+paced `artistListenersLookup` and waits at most 4s; a late answer still lands in
+the memo. On every fetch it also warms the **next queued track's artist** in the
+background, so an artist change doesn't miss. It can't use
+`api.informationTypes.fetch` (which would also fill the host cache): the host
+refuses a plugin calling itself.
 
 ## Scraping Flow
 

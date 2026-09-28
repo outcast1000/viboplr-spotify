@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.23.0
+- **Settings moved into the Spotify view.** The view now has three tabs:
+  **Browse** (home, search, playlists), **Settings** (auto-refresh, show
+  browser, include albums, Liked Songs import) and **Debug** (debug logging,
+  the step-by-step debugger, diagnostics). The separate Spotify page under the
+  app's Settings is gone.
+- **"Spotify listeners" Now Playing info item:** the playing artist's monthly
+  Spotify listeners in the mini player's info line. Off by default; turn it on
+  in Settings → Playback → Now playing info. Served from cache when the
+  artist's page already looked it up, and the next queued artist is looked up
+  ahead of time, so it usually appears as soon as a track starts.
+
 ## v1.22.1
 - **Menu items no longer name Spotify themselves:** "Start radio" and "Play
   the Full Album". Apps that prefix plugin menu items with the plugin name show
