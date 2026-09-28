@@ -1,7 +1,7 @@
 {
   "id": "spotify-browse",
   "name": "Spotify",
-  "version": "1.25.0",
+  "version": "1.25.1",
   "author": "Viboplr",
   "description": "Browse your Spotify Music home — playlists grouped by shelf — search Spotify for songs, play full albums, and see Spotify play counts and monthly listeners",
   "icon": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.5 16c2.5-1 5.5-1 7.5 0M7 13c3-1.5 7.5-1.5 10.5 0M5.5 10c4-2 9.5-2 13.5 0",
@@ -27,10 +27,12 @@
       "tools": [
         {
           "name": "status",
+          "readOnly": true,
           "description": "What the Spotify scraper knows: playlist count, section names, sync state, last check time"
         },
         {
           "name": "list_playlists",
+          "readOnly": true,
           "description": "The scraped playlists (id, name, section, cached track count), optionally one section's",
           "inputSchema": {
             "type": "object",
@@ -44,6 +46,7 @@
         },
         {
           "name": "get_playlist_tracks",
+          "readOnly": true,
           "description": "A playlist's tracks (title/artist/album). Served from cache; an unfetched playlist is scraped lazily — slow (tens of seconds)",
           "inputSchema": {
             "type": "object",
@@ -60,6 +63,7 @@
         },
         {
           "name": "get_album_tracks",
+          "readOnly": true,
           "description": "An album's full tracklist from Spotify, in album order. Give the album name, or a track title to use that track's album. Live lookup — slow (10–30s)",
           "inputSchema": {
             "type": "object",
@@ -84,6 +88,7 @@
         },
         {
           "name": "get_track_plays",
+          "readOnly": true,
           "description": "Spotify's all-time play count for a song. found:false when Spotify has no match or shows no count (it hides counts under ~1,000 plays). Live lookup — slow",
           "inputSchema": {
             "type": "object",
@@ -103,6 +108,7 @@
         },
         {
           "name": "get_artist_listeners",
+          "readOnly": true,
           "description": "An artist's current monthly listeners on Spotify (exact name match only). Live lookup — slow",
           "inputSchema": {
             "type": "object",

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.25.1
+- **AI assistants can read your Spotify catalog without extra permissions.**
+  All six assistant tools (status, list playlists, a playlist's tracks, an
+  album's tracks, a song's plays, an artist's monthly listeners) are now
+  marked read-only. On Viboplr versions that add the "Plugin actions"
+  permission, read-only tools always run, so asking an assistant for the
+  tracks of "Daily Mix 1" works with that switch off. Older app versions
+  ignore the flag and behave as before.
+
 ## v1.25.0
 - **The plugin now remembers whether you're signed in to Spotify.** It
   records this whenever a Spotify window checks anyway (a sync, a search, a
