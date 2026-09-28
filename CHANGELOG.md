@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.25.0
+- **The plugin now remembers whether you're signed in to Spotify.** It
+  records this whenever a Spotify window checks anyway (a sync, a search, a
+  radio, a background plays/listeners lookup), keeps it across restarts, and
+  only changes it when a window proves otherwise. There is no extra polling
+  and no extra page loads.
+- **Signed out:** the header says "Signed out" and a banner under the tabs
+  explains it, with a **Sign in** button that starts a sync and opens the
+  window to sign in. The sidebar gets a dot when this first happens.
+- **Signed in:** the header subtitle starts with the account name shown on
+  Spotify's user menu ("Signed in as …"), when the page shows one.
+- Background lookups still pause for 10 minutes after finding you signed out,
+  but that pause no longer decides what the header says, so the header can't
+  show an out-of-date state when the pause runs out.
+
 ## v1.24.0
 - **Status in the app's plugin header.** On Viboplr 1.0.77 and later, the
   strip the app draws above the Spotify view shows what the plugin has:

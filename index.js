@@ -16,10 +16,18 @@ function activate(api) {
   // the first window and wedging the UI.
   var windowBusy = false;
   // Background lookups (info sections) that found Spotify signed out stop
-  // opening windows until this time; any confirmed login clears it.
+  // opening windows until this time; any confirmed login clears it. This is
+  // only a retry throttle — what the UI shows is `auth` below.
   var SIGNED_OUT = "Not signed in to Spotify";
   var QUIET_LOGIN_BUDGET_MS = 25000;
   var signedOutUntil = 0;
+  // Last known Spotify sign-in, from real evidence only: a login check that
+  // confirmed it (signed-in, with the account name when the page showed one)
+  // or an affirmative signed-out page. It never expires on a timer, so the
+  // header and banner can't go stale; persisted so it survives a restart.
+  // state: "unknown" | "signed-in" | "signed-out".
+  var AUTH_KEY = "spotify_browse_auth";
+  var auth = { state: "unknown", account: null };
   // Whether this plugin currently owns the single global host loading modal, so
   // concurrent Play/Enqueue actions don't show/hide each other's modal.
   var loadingModalActive = false;
@@ -717,6 +725,25 @@ function activate(api) {
     });
   }
 
+  // Record new sign-in evidence. Re-renders (which re-pushes the header and
+  // the signed-out banner) only when something changed.
+  function setAuth(next, account) {
+    var acc = next === "signed-in" ? (cleanAccountName(account) || (auth.state === "signed-in" ? auth.account : null)) : null;
+    if (auth.state === next && auth.account === acc) return;
+    var wasOut = auth.state === "signed-out";
+    auth = { state: next, account: acc };
+    api.storage.set(AUTH_KEY, { state: next, account: acc, at: new Date().toISOString() }).catch(console.error);
+    if (next === "signed-out" && !wasOut) api.ui.setBadge("spotify", { type: "dot", variant: "warning" });
+    renderView();
+  }
+
+  // Pure: the account name as shown on Spotify's user widget, or null.
+  function cleanAccountName(raw) {
+    if (typeof raw !== "string") return null;
+    var t = raw.replace(/\s+/g, " ").trim();
+    return t ? t.slice(0, 60) : null;
+  }
+
   function savePreferences() {
     api.storage.set("spotify_browse_preferences", {
       showBrowserOnRefresh: state.showBrowserOnRefresh,
@@ -748,19 +775,25 @@ function activate(api) {
   // >= 1.0.77). One status word says whether the library is synced; the
   // subtitle is what's in it. The live sync progress and any error text stay
   // in the view's toolbar, which is where Sync / Cancel live.
-  //   h: { status, refreshing, playlists, shelves, lastSync (formatted), lastCheckFailed }
+  //   h: { status, refreshing, playlists, shelves, lastSync (formatted),
+  //        lastCheckFailed, auth: "unknown"|"signed-in"|"signed-out", account }
   function viewHeaderFor(h) {
-    var subtitle = "Your Spotify home, playlists and song search";
+    var parts = [];
+    if (h.auth === "signed-in" && h.account) parts.push("Signed in as " + h.account);
     if (h.playlists > 0) {
-      subtitle = h.playlists + (h.playlists === 1 ? " playlist" : " playlists") +
-        " on " + h.shelves + (h.shelves === 1 ? " shelf" : " shelves") +
-        (h.lastSync ? " · last sync " + h.lastSync : "");
+      parts.push(h.playlists + (h.playlists === 1 ? " playlist" : " playlists") +
+        " on " + h.shelves + (h.shelves === 1 ? " shelf" : " shelves"));
+      if (h.lastSync) parts.push("last sync " + h.lastSync);
     }
+    var subtitle = parts.length ? parts.join(" · ") : "Your Spotify home, playlists and song search";
     var status;
     if (h.status === "waiting-login" || h.status === "running" || h.refreshing) {
       // waiting-login opens every sync (even when already signed in), so it
       // reads as syncing; the toolbar says when a sign-in is really needed.
       status = { variant: "muted", label: "Syncing…" };
+    } else if (h.auth === "signed-out") {
+      // The explanation and the Sign in button are the in-view banner.
+      status = { variant: "warning", label: "Signed out" };
     } else if (h.status === "error") {
       status = { variant: "error", label: "Sync failed" };
     } else if (h.lastCheckFailed) {
@@ -787,6 +820,8 @@ function activate(api) {
       shelves: state.sections.length,
       lastSync: formatSyncTime(state.lastCheckAt),
       lastCheckFailed: / error/.test(state.lastCheckResult || ""),
+      auth: auth.state,
+      account: auth.account,
     });
     var key = JSON.stringify(header);
     if (key === lastViewHeader) return;
@@ -826,9 +861,26 @@ function activate(api) {
   }
 
   function setView(children, scrollKey) {
+    var top = [buildTabs()];
+    var banner = signInBannerFor(auth.state, isActiveStatus() || state.refreshing);
+    if (banner) top.push(banner);
     api.ui.setViewData("spotify", {
-      type: "layout", direction: "vertical", children: [buildTabs()].concat(children),
+      type: "layout", direction: "vertical", children: top.concat(children),
     }, { scrollKey: scrollKey });
+  }
+
+  // Pure: the "you're signed out" row under the tabs, with the button that
+  // fixes it (Sync opens the window and asks for a sign-in). Hidden while a
+  // sync runs — the window and the toolbar are handling it then.
+  function signInBannerFor(authState, syncing) {
+    if (authState !== "signed-out" || syncing) return null;
+    return {
+      type: "layout", direction: "horizontal", className: "ds-banner ds-banner--warning",
+      children: [
+        { type: "text", content: "You're signed out of Spotify. Sign in to sync your home and to look up plays and listeners." },
+        { type: "button", label: "Sign in", action: "sync", variant: "accent" },
+      ],
+    };
   }
 
   // The song-search box, hoisted with the toolbar on the home and results views
@@ -1743,7 +1795,8 @@ function activate(api) {
     'var sessionEl=qs("script#session,script[data-testid=\\"session\\"]");' +
     'signals.sessionTag=false;' +
     'if(sessionEl){try{var sj=JSON.parse(sessionEl.textContent||"{}");signals.sessionTag=!!sj.accessToken}catch(e){}}' +
-    'signals.userWidget=!!qs("[data-testid=\\"user-widget-link\\"]");' +
+    'var uw=qs("[data-testid=\\"user-widget-link\\"]");' +
+    'signals.userWidget=!!uw;' +
     'signals.libraryBtn=!!qs("[data-testid=\\"your-library-button\\"], [aria-label=\\"Your Library\\"], [aria-label*=\\"library\\"]");' +
     'signals.createPlaylist=!!qs("[aria-label*=\\"Create\\"]");' +
     'signals.globalNav=!!qs("[data-testid=\\"global-nav-bar\\"], #global-nav-bar");' +
@@ -1763,6 +1816,8 @@ function activate(api) {
     // loading (no signals yet). The host only surfaces the window on a real
     // loggedOut to avoid flashing it during a slow load for a logged-in user.
     'var loggedOut=!!neg;' +
+    // The user widget's aria-label is the account's display name (SPEC.md).
+    'var account=ok&&uw?(uw.getAttribute("aria-label")||""):"";' +
     'var pageDump=null;' +
     'if(!pos&&!neg){' +
       'var btns=qsa("button");' +
@@ -1775,7 +1830,7 @@ function activate(api) {
       'console.log("[viboplr-login] NO CLEAR SIGNAL page dump:",JSON.stringify(pageDump));' +
     '}' +
     'console.log("[viboplr-login] result: loggedIn="+ok+" pos="+pos+" neg="+neg);' +
-    'window.__viboplr.send("login-check",{loggedIn:ok,loggedOut:loggedOut,signals:signals,url:location.href,pageDump:pageDump});' +
+    'window.__viboplr.send("login-check",{loggedIn:ok,loggedOut:loggedOut,account:account,signals:signals,url:location.href,pageDump:pageDump});' +
     '}catch(e){' +
       'console.error("[viboplr-login] CAUGHT ERROR:",e,""+e,e.stack);' +
       'try{window.__viboplr.send("login-check",{loggedIn:false,error:""+e})}catch(e2){console.error("[viboplr-login] send also failed:",e2)}' +
@@ -2831,6 +2886,7 @@ function activate(api) {
           // Don't show the window until the page positively reports a logged-out
           // state. Until then a missing "loggedIn" just means "still loading".
           if (!sawLoggedOut) return;
+          setAuth("signed-out");
           if (quiet) { failWith(new Error(SIGNED_OUT)); return; }
           loginPromptShown = true;
           plog("warn", "login", "Not logged in to Spotify — surfacing window for sign-in");
@@ -2861,7 +2917,9 @@ function activate(api) {
             }
             // Login confirmed — leave the "waiting-login" state so the toolbar
             // switches from the login prompt to live scrape-stage messages.
+            // (Before setAuth, so its re-render already shows the sync running.)
             if (state.status === "waiting-login") state.status = "running";
+            setAuth("signed-in", msg.data.account);
             // Hand control to fn. Route subsequent messages to its handler.
             Promise.resolve()
               .then(function () { return fn(h, ctx); })
@@ -3817,7 +3875,7 @@ function activate(api) {
     return step(scriptSearchCandidates(ctx.gen, facet), "search-candidates", { timeoutMs: 40000, label: facet + " search" })
       .then(function (d) {
         if (d.error) throw new Error(d.error);
-        if (d.loggedOut) throw new Error(SIGNED_OUT);
+        if (d.loggedOut) { setAuth("signed-out"); throw new Error(SIGNED_OUT); }
         if (d.noResults) lastSearchEmptyPage = true;
         plog("info", "lookup", facet + " search \"" + query + "\": " + (d.candidates || []).length + " candidates" +
           (d.noResults ? " (Spotify showed its \"no results\" page — a miss, or search throttling)" : ""));
@@ -5199,6 +5257,16 @@ function activate(api) {
   // One-time cleanup: remove the old Liked Songs on-disk directory and its
   // synthetic playlist data (no longer supported). Safe no-op if absent.
   api.storage.files.remove(["playlists", "Liked Songs"]).catch(function () {});
+
+  // Last known sign-in (see `auth`). Evidence from this session wins over the
+  // stored reading if a window already reported before this resolved.
+  api.storage.get(AUTH_KEY).then(function (saved) {
+    if (!saved || auth.state !== "unknown") return;
+    if (saved.state === "signed-in" || saved.state === "signed-out") {
+      auth = { state: saved.state, account: saved.state === "signed-in" ? cleanAccountName(saved.account) : null };
+      renderView();
+    }
+  }).catch(console.error);
 
   // Load preferences
   api.storage.get("spotify_browse_preferences").then(function(prefs) {

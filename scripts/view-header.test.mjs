@@ -66,3 +66,39 @@ test("stays within the host's limits and sets no actions", () => {
   assert.equal(r.actions, undefined);
   assert.ok(["success", "warning", "error", "muted"].includes(r.status.variant));
 });
+
+test("signed out wins over synced/failed, but not over a running sync", () => {
+  const out = { auth: "signed-out", playlists: 5, shelves: 2, status: "done" };
+  assert.deepEqual(h(out).status, { variant: "warning", label: "Signed out" });
+  assert.deepEqual(h({ ...out, status: "error", lastCheckFailed: true }).status, { variant: "warning", label: "Signed out" });
+  assert.equal(h({ ...out, status: "running" }).status.label, "Syncing…");
+  assert.equal(h(out).subtitle, "5 playlists on 2 shelves");
+});
+
+test("signed in: the account leads the subtitle when known", () => {
+  assert.equal(h({ auth: "signed-in", account: "Alex", playlists: 5, shelves: 2, lastSync: "29 Sep, 14:32", status: "done" }).subtitle,
+    "Signed in as Alex · 5 playlists on 2 shelves · last sync 29 Sep, 14:32");
+  assert.equal(h({ auth: "signed-in", account: "Alex" }).subtitle, "Signed in as Alex");
+  assert.equal(h({ auth: "signed-in", account: null }).subtitle, MANIFEST.viewHeader.subtitle);
+  assert.equal(h({ auth: "signed-in", account: "Alex", status: "done", playlists: 1, shelves: 1 }).status.label, "Synced");
+  // An account is never shown for a signed-out or unknown state.
+  assert.doesNotMatch(h({ auth: "signed-out", account: "Alex" }).subtitle, /Alex/);
+});
+
+test("signInBannerFor: only when signed out and no sync is handling it", () => {
+  const signInBannerFor = extractFn("signInBannerFor");
+  assert.equal(signInBannerFor("signed-in", false), null);
+  assert.equal(signInBannerFor("unknown", false), null);
+  assert.equal(signInBannerFor("signed-out", true), null);
+  const b = signInBannerFor("signed-out", false);
+  assert.match(b.className, /ds-banner ds-banner--warning/);
+  assert.deepEqual(b.children.find((c) => c.type === "button"), { type: "button", label: "Sign in", action: "sync", variant: "accent" });
+});
+
+test("cleanAccountName trims, collapses and caps", () => {
+  const cleanAccountName = extractFn("cleanAccountName");
+  assert.equal(cleanAccountName("  Alex \n O  "), "Alex O");
+  assert.equal(cleanAccountName(""), null);
+  assert.equal(cleanAccountName(undefined), null);
+  assert.equal(cleanAccountName("x".repeat(80)).length, 60);
+});
