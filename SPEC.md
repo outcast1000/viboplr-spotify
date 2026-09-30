@@ -115,20 +115,6 @@ tabbed, the plugin handles the host's `host:search` action itself (Cmd+K
 "search on Spotify"): it runs the search and switches to Browse, instead of
 relying on the host seeding the first search box, which the other tabs don't have.
 
-### Now Playing info: "Spotify listeners"
-A Now Playing info item (`api.nowPlayingInfo`, id `listeners`, **off by
-default** — enable it in Settings → Playback → Now playing info) showing the
-current track's artist's monthly listeners ("16.7M monthly listeners on
-Spotify"). The host gives an item 5s and resolves it once per track, while a
-lookup takes 10–30s, so it answers from what is already known: a session memo
-(24h), then the host's cached `spotify_artist_listeners` value (fresh within its
-7-day ttl, via `api.informationTypes.getValue`). Otherwise it starts the normal
-paced `artistListenersLookup` and waits at most 4s; a late answer still lands in
-the memo. On every fetch it also warms the **next queued track's artist** in the
-background, so an artist change doesn't miss. It can't use
-`api.informationTypes.fetch` (which would also fill the host cache): the host
-refuses a plugin calling itself.
-
 ## Scraping Flow
 
 ### Phase 0: First activation (one-shot)

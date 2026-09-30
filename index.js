@@ -2880,6 +2880,9 @@ function activate(api) {
         // case during a slow page load, and caused the window to flash for an
         // already-logged-in user).
         var sawLoggedOut = false;
+        // The newest login-check reading, so a quiet timeout can say what the
+        // page actually showed (nothing at all vs. no clear signal).
+        var lastLoginCheck = null;
 
         function promptForLogin() {
           if (loginPromptShown) return;
@@ -2903,6 +2906,7 @@ function activate(api) {
           }
           // Remember an affirmative logged-out reading and, once seen, surface the
           // window straight away (no need to wait for another grace poll).
+          if (msg.type === "login-check" && msg.data) lastLoginCheck = msg.data;
           if (msg.type === "login-check" && msg.data && msg.data.loggedOut && !msg.data.loggedIn) {
             sawLoggedOut = true;
             if (loginRetries > LOGIN_GRACE_POLLS) promptForLogin();
@@ -2938,6 +2942,7 @@ function activate(api) {
           loginRetries++;
           if (loginRetries > LOGIN_GRACE_POLLS) promptForLogin();
           if (quiet && loginRetries * 3000 > QUIET_LOGIN_BUDGET_MS) {
+            plog("warn", "login", lastLoginCheck ? "login check never settled; last reading" : "login check never settled; the page sent no reading", lastLoginCheck);
             failWith(new Error("Spotify login check timed out"));
             return;
           }
@@ -4159,109 +4164,6 @@ function activate(api) {
         if (r.status !== "ok") return r;
         var url = "https://open.spotify.com/artist/" + r.value.artistId;
         return { status: "ok", value: { items: [{ label: "monthly listeners on Spotify", value: r.value.listeners }], url: url, _meta: { url: url, providerName: "Spotify" } } };
-      });
-    });
-  }
-
-  // ---- Now Playing info: the artist's Spotify monthly listeners ----
-  //
-  // The host gives a Now Playing item 5s and resolves it once per track, while
-  // a live lookup takes 10–30s. So the item answers from what is already
-  // known — this session's memo, then the host's info cache (the artist page's
-  // spotify_artist_listeners title line) — and otherwise starts the lookup,
-  // waiting only briefly for it. A lookup that finishes late still lands in the
-  // memo, and the next queued track's artist is warmed in the background, so a
-  // change of artist doesn't miss. (Asking the host's informationTypes.fetch
-  // would also fill its cache, but the host refuses a plugin calling itself.)
-  var listenersMemo = {};  // normalized artist -> { at, listeners: number | null }
-  var LISTENERS_MEMO_TTL_MS = 24 * 60 * 60 * 1000;
-  var LISTENERS_HOST_CACHE_TTL_S = 7 * 24 * 60 * 60;  // the info type's ttl
-  var NOW_PLAYING_WAIT_MS = 4000;  // under the host's 5s budget
-
-  // Resolves the listener count, null (Spotify has no such artist / no
-  // count), or undefined (not known yet).
-  function knownListeners(artist) {
-    var key = normalizeName(artist);
-    var m = listenersMemo[key];
-    if (m && Date.now() - m.at < LISTENERS_MEMO_TTL_MS) return Promise.resolve(m.listeners);
-    if (!api.informationTypes || typeof api.informationTypes.getValue !== "function") return Promise.resolve(undefined);
-    return api.informationTypes.getValue("spotify_artist_listeners", { kind: "artist", name: artist }).then(function (row) {
-      var fresh = row && row.status === "ok" && row.fetchedAt && (Date.now() / 1000 - row.fetchedAt) < LISTENERS_HOST_CACHE_TTL_S;
-      var item = fresh && row.value && row.value.items && row.value.items[0];
-      var n = item ? Number(item.value) : NaN;
-      if (!(n > 0)) return undefined;
-      listenersMemo[key] = { at: Date.now(), listeners: n };
-      return n;
-    }, function (e) {
-      console.error("Failed to read cached Spotify listeners:", artist, e);
-      return undefined;
-    });
-  }
-
-  // Runs (or joins) the paced lookup and memoizes a definite answer. Errors
-  // (signed out, throttled, busy) are not memoized so a later track retries.
-  function lookupListeners(artist) {
-    return artistListenersLookup(artist).then(function (r) {
-      if (r.status === "ok") {
-        listenersMemo[normalizeName(artist)] = { at: Date.now(), listeners: r.value.listeners };
-        return r.value.listeners;
-      }
-      if (r.status === "not_found") {
-        listenersMemo[normalizeName(artist)] = { at: Date.now(), listeners: null };
-        return null;
-      }
-      return undefined;
-    });
-  }
-
-  function warmListeners(artist) {
-    return knownListeners(artist).then(function (n) {
-      return n !== undefined ? n : lookupListeners(artist);
-    });
-  }
-
-  function warmNextArtist(currentArtist) {
-    if (!api.playback || typeof api.playback.getQueue !== "function") return;
-    Promise.resolve(api.playback.getQueue()).then(function (q) {
-      var next = q && q.tracks && q.tracks[q.index + 1];
-      var artist = next && next.artist_name;
-      if (!artist || normalizeName(artist) === normalizeName(currentArtist)) return;
-      return warmListeners(artist);
-    }).catch(function (e) {
-      console.error("Failed to warm Spotify listeners for the next track:", e);
-    });
-  }
-
-  // 16684335 -> "16.7M" (the same tiers the Last.fm plugin's Listeners item uses).
-  function compactCount(n) {
-    var tiers = [[1e9, "B"], [1e6, "M"], [1e3, "k"]];
-    for (var i = 0; i < tiers.length; i++) {
-      var scaled = n / tiers[i][0];
-      if (scaled < 0.9995) continue;
-      return scaled.toFixed(scaled >= 99.95 ? 0 : 1).replace(/\.0$/, "") + tiers[i][1];
-    }
-    return String(Math.round(n));
-  }
-
-  function listenersResult(n) {
-    return n ? { status: "ok", text: compactCount(n) + " monthly listeners on Spotify" } : { status: "empty" };
-  }
-
-  if (api.nowPlayingInfo && typeof api.nowPlayingInfo.registerItem === "function") {
-    // Off by default: when on, every new artist costs a hidden Spotify page.
-    api.nowPlayingInfo.registerItem({ id: "listeners", label: "Spotify listeners", priority: 110, defaultEnabled: false });
-    api.nowPlayingInfo.onFetch("listeners", function (track) {
-      var artist = track && track.artist_name;
-      if (!artist) return Promise.resolve({ status: "empty" });
-      return knownListeners(artist).then(function (n) {
-        if (n !== undefined) {
-          warmNextArtist(artist);
-          return listenersResult(n);
-        }
-        var lookup = lookupListeners(artist);
-        // Warm the next artist only once this lookup is through the queue.
-        lookup.then(function () { warmNextArtist(artist); });
-        return Promise.race([lookup, waitMs(NOW_PLAYING_WAIT_MS).then(function () { return undefined; })]).then(listenersResult);
       });
     });
   }

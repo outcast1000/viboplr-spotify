@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.25.2
+- **Removed the "Spotify listeners" Now Playing info item.** Each new artist
+  cost a hidden Spotify page for 10–30s, and a failed lookup was retried
+  every couple of minutes, holding the one Spotify window syncs and searches
+  need. Monthly listeners are still on artist pages and in the assistant
+  tools, and the Last.fm plugin's Listeners item covers Now Playing.
+- **Clearer log when a background lookup's sign-in check times out.** The
+  plugin log now records what the Spotify page last reported (or that it
+  reported nothing), so the cause can be found. If lookups keep failing with
+  "Spotify login check timed out", turning the plugin off and on in
+  Extensions clears it.
+
 ## v1.25.1
 - **AI assistants can read your Spotify catalog without extra permissions.**
   All six assistant tools (status, list playlists, a playlist's tracks, an
