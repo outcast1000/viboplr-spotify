@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.26.0
+- **Runs in the plugin worker runtime.** It now gets only what it asks for
+  — `browse:open.spotify.com`, `network:*.scdn.co`, `network:*.spotifycdn.com`, `library:read`, `library:write`, `playback:control` — and can't reach anything else in the app. Viboplr asks
+  you to allow these once when you update. Requires Viboplr 1.0.85.
+
 ## v1.25.2
 - **Removed the "Spotify listeners" Now Playing info item.** Each new artist
   cost a hidden Spotify page for 10–30s, and a failed lookup was retried
