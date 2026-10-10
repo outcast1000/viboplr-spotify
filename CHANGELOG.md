@@ -1,5 +1,9 @@
 # Changelog
 
+
+## v1.26.1
+- Releases are now signed with the Viboplr plugin-signing key, so Viboplr allows the permissions this plugin asks for without prompting. No functional changes.
+
 ## v1.26.0
 - **Runs in the plugin worker runtime.** It now gets only what it asks for
   — `browse:open.spotify.com`, `network:*.scdn.co`, `network:*.spotifycdn.com`, `library:read`, `library:write`, `playback:control` — and can't reach anything else in the app. Viboplr asks
