@@ -1,28 +1,33 @@
 {
   "id": "spotify-browse",
   "name": "Spotify",
-  "version": "1.26.1",
+  "version": "1.26.2",
   "author": "Viboplr",
   "description": "Browse your Spotify Music home — playlists grouped by shelf — search Spotify for songs, play full albums, and see Spotify play counts and monthly listeners",
   "icon": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.5 16c2.5-1 5.5-1 7.5 0M7 13c3-1.5 7.5-1.5 10.5 0M5.5 10c4-2 9.5-2 13.5 0",
   "minAppVersion": "1.0.85",
   "runtime": "worker",
-  "permissions": ["browse:open.spotify.com", "network:*.scdn.co", "network:*.spotifycdn.com", "library:read", "library:write", "playback:control"],
+  "permissions": [
+    "browse:open.spotify.com",
+    "network:*.scdn.co",
+    "network:*.spotifycdn.com",
+    "library:read",
+    "library:write",
+    "playback:control"
+  ],
+  "permissionReasons": {
+    "browse:open.spotify.com": "Read your Spotify home, playlists, albums and search results in a hidden window, signed in as you",
+    "network:*.scdn.co": "Save playlist covers and track artwork from Spotify's image servers to show in your playlists",
+    "network:*.spotifycdn.com": "Save the covers Spotify generates for playlists such as Daily Mixes, which it serves from spotifycdn.com",
+    "library:read": "Check which songs you've already liked or disliked, so a Liked Songs import skips them",
+    "library:write": "Import your Spotify Liked Songs as likes and save Spotify playlists to Playlists",
+    "playback:control": "Play or enqueue Spotify playlists, albums, home shelves and search results"
+  },
   "homepage": "https://github.com/outcast1000/viboplr-spotify",
   "updateUrl": "https://github.com/outcast1000/viboplr-spotify/releases/latest/download/update.json",
   "viewHeader": {
     "subtitle": "Your Spotify home, playlists and song search"
   },
-  "apiUsage": [
-    {
-      "api": "library.setTrackLikesBatch",
-      "reason": "Import your Spotify Liked Songs as likes"
-    },
-    {
-      "api": "library.getTrackLikeStates",
-      "reason": "Skip tracks already liked or disliked before importing"
-    }
-  ],
   "contributes": {
     "assistant": {
       "instructions": "Browse the user's scraped Spotify home (playlists grouped by section — Daily Mixes, Made For You, …). Content comes from periodic syncs, not live Spotify. TO PLAY: use the host's home-shelf verbs (GET /v1/home/shelves → POST /v1/home/shelf → POST /v1/home/play) — they handle lazy track resolution and backfill; playback rides other resolvers (usually yt-dlp). These tools are for READING the catalog first: status (is anything synced), list_playlists, get_playlist_tracks (serves the cache, scraping lazily on a miss — can take tens of seconds). Catalog lookups (live, each opens a hidden Spotify page — 10–30s): get_album_tracks (an album's full tracklist in order), get_track_plays (Spotify's all-time play count for a song), get_artist_listeners (an artist's monthly listeners). Spotify shows no per-track listener figure; per-track listeners are a Last.fm stat.",
