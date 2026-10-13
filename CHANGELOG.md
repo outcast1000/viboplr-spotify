@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.27.0
+- **No surprise Spotify window after installing.** The first sync after a fresh
+  install now checks your sign-in in the background. If you're already signed
+  in to Spotify it syncs as before; if not, the Spotify view shows "You're
+  signed out" with a **Sign in** button, and nothing pops up until you press
+  it. (It used to open the sign-in window by itself, which landed in the
+  middle of Viboplr's setup wizard.)
+- The assistant `status` tool also reports whether you're signed in and the
+  account name, which Viboplr's setup wizard shows on its Connect Spotify step.
+
 ## v1.26.2
 - Each permission now says why the plugin needs it, shown under it when Viboplr asks. No functional changes.
 

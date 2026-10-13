@@ -119,11 +119,19 @@ relying on the host seeding the first search box, which the other tabs don't hav
 
 ### Phase 0: First activation (one-shot)
 On the very first activation of a fresh install (no on-disk playlists, no
-legacy KV state, never synced), the plugin starts the initial sync
-automatically instead of waiting for a manual Sync click, and shows a
-notification explaining what's happening. The normal login-check flow
-(Phase 1) then asks the user to sign in in the embedded browser window if
-they aren't logged in; with an existing session the sync completes headlessly.
+legacy KV state, never synced), the plugin starts a **quiet** initial sync
+(`startSync("first-run", { quiet: true })`, status `checking`). It checks the
+sign-in in a hidden window and never surfaces it: with an existing session
+the sync goes on headlessly; with none, `setAuth("signed-out")` puts up the
+signed-out banner and the sidebar dot, the run ends at `idle` (not `error`),
+and nothing more happens until the user presses Sign in / Sync, which runs the
+normal, visible login flow (Phase 1). No toast is shown for the check.
+
+It used to surface the window by itself. A fresh install happens inside the
+host's setup wizard, so the window popped up steps before the wizard's own
+"Connect Spotify" step, which now asks for the sign-in (it dispatches `sync`
+and reads `status`, whose `auth` / `account` fields exist for it).
+
 This is guarded by the `spotify_browse_first_run_done` storage key so it runs
 at most once — established installs (existing library or a prior
 `lastCheckAt`) just set the flag silently and never see an unexpected popup.

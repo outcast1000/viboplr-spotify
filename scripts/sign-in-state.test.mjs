@@ -26,27 +26,34 @@ function stub(over) {
   });
 }
 
-function startHost(stored = {}) {
-  const host = { headers: [], views: [], saved: {}, actions: {}, window: null };
+// fresh: model a brand-new install (empty playlist folder, so the plugin's
+// first-activation sync runs). Otherwise the stub's null file listing reads as
+// a failed load, which the plugin treats as "has data" and skips it.
+function startHost(stored = {}, { fresh = false } = {}) {
+  const host = { headers: [], views: [], saved: {}, actions: {}, window: null, opened: [], shown: 0, toasts: [], tools: {} };
   const store = { ...stored };
   const api = stub({
     ui: stub({
       setViewHeader: (id, h) => host.headers.push(h),
       setViewData: (id, d) => host.views.push(d),
       onAction: (id, f) => { host.actions[id] = f; },
+      showNotification: (m) => { host.toasts.push(m); },
     }),
+    assistant: stub({ onTool: (name, f) => { host.tools[name] = f; } }),
     storage: stub({
       get: (k) => Promise.resolve(k in store ? store[k] : null),
       set: (k, v) => { store[k] = v; host.saved[k] = v; return Promise.resolve(); },
+      ...(fresh ? { files: stub({ list: () => Promise.resolve([]) }) } : {}),
     }),
     network: stub({
-      openBrowseWindow: () => {
+      openBrowseWindow: (url, opts) => {
+        host.opened.push({ url, opts });
         const w = { onMsg: null };
         w.handle = {
           eval: () => Promise.resolve(),
           onMessage: (cb) => { w.onMsg = cb; },
           onNavigation: () => {},
-          show: () => Promise.resolve(),
+          show: () => { host.shown++; return Promise.resolve(); },
           hide: () => Promise.resolve(),
           close: () => Promise.resolve(),
         };
@@ -146,4 +153,74 @@ test("nothing stored: unknown state, no banner, no Signed out", async (t) => {
   await settle();
   assert.deepEqual(host.header().status, { variant: "muted", label: "Not synced" });
   assert.equal(host.banner(), undefined);
+});
+
+// --- First activation (a fresh install). It used to surface the sign-in window
+// by itself, which on a fresh install lands in the middle of the host's setup
+// wizard; now it checks quietly and leaves the sign-in to the user.
+
+test("first activation, signed out: hidden check, no window, no toast, ends on the banner", async (t) => {
+  quietConsole(t);
+  mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  t.after(() => mock.timers.reset());
+  const host = startHost({}, { fresh: true });
+  await settle();
+  assert.equal(host.opened.length, 1, "the first-run sync opened its window");
+  assert.equal(host.opened[0].opts.visible, false, "hidden");
+  assert.equal((await host.tools.status()).syncStatus, "checking");
+  assert.equal(host.header().status.label, "Checking sign-in…");
+
+  mock.timers.tick(1500);
+  await settle();
+  host.window.send("login-check", { loggedIn: false, loggedOut: true });
+  mock.timers.tick(3000 * 3); // well past the grace polls
+  await settle();
+
+  assert.equal(host.shown, 0, "never surfaced the window");
+  assert.deepEqual(host.toasts, [], "no toast for a sync nobody asked for");
+  const status = await host.tools.status();
+  assert.equal(status.syncStatus, "idle", "a quiet check that finds no session isn't a failed sync");
+  assert.equal(status.auth, "signed-out");
+  assert.ok(host.banner(), "the signed-out banner offers Sign in");
+  assert.deepEqual(host.header().status, { variant: "warning", label: "Signed out" });
+});
+
+test("first activation, already signed in: syncs headlessly and reports the account", async (t) => {
+  quietConsole(t);
+  mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  t.after(() => mock.timers.reset());
+  const host = startHost({}, { fresh: true });
+  await settle();
+  mock.timers.tick(1500);
+  await settle();
+  host.window.send("login-check", { loggedIn: true, loggedOut: false, account: "Alex" });
+  await settle();
+
+  assert.equal(host.shown, 0);
+  const status = await host.tools.status();
+  assert.equal(status.syncStatus, "running", "the sync goes on once the session is confirmed");
+  assert.equal(status.auth, "signed-in");
+  assert.equal(status.account, "Alex");
+});
+
+test("Sign in after a quiet check opens a visible sign-in like any Sync", async (t) => {
+  quietConsole(t);
+  mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  t.after(() => mock.timers.reset());
+  const host = startHost({}, { fresh: true });
+  await settle();
+  mock.timers.tick(1500);
+  await settle();
+  host.window.send("login-check", { loggedIn: false, loggedOut: true });
+  mock.timers.tick(3000 * 3);
+  await settle();
+
+  host.actions["sync"]();
+  await settle();
+  assert.equal((await host.tools.status()).syncStatus, "waiting-login");
+  mock.timers.tick(1500 + 3000 * 3);
+  await settle();
+  host.window.send("login-check", { loggedIn: false, loggedOut: true });
+  await settle();
+  assert.equal(host.shown, 1, "the user's own Sync surfaces the window for the sign-in");
 });

@@ -38,7 +38,8 @@ function activate(api) {
     // per currentView), "settings" or "debug". In-memory only — the view
     // always opens on Browse.
     activeTab: "browse",
-    // idle | waiting-login | running | done | error
+    // idle | checking | waiting-login | running | done | error
+    // (checking = a quiet sync's hidden sign-in check; it never shows a window)
     status: "idle",
     // Human-readable progress line shown in the toolbar while a sync runs
     // (e.g. "Reading your Spotify home…", "Getting tracks: Discover Weekly (3/12)").
@@ -787,7 +788,9 @@ function activate(api) {
     }
     var subtitle = parts.length ? parts.join(" · ") : "Your Spotify home, playlists and song search";
     var status;
-    if (h.status === "waiting-login" || h.status === "running" || h.refreshing) {
+    if (h.status === "checking") {
+      status = { variant: "muted", label: "Checking sign-in…" };
+    } else if (h.status === "waiting-login" || h.status === "running" || h.refreshing) {
       // waiting-login opens every sync (even when already signed in), so it
       // reads as syncing; the toolbar says when a sign-in is really needed.
       status = { variant: "muted", label: "Syncing…" };
@@ -901,7 +904,7 @@ function activate(api) {
   }
 
   function isActiveStatus() {
-    return state.status === "waiting-login" || state.status === "running";
+    return state.status === "checking" || state.status === "waiting-login" || state.status === "running";
   }
 
   // Update the live progress line shown in the toolbar during a sync and
@@ -929,7 +932,9 @@ function activate(api) {
     if (isActive) {
       // Prefer the live per-stage progress line; fall back to the login wait
       // (the stage is empty until the first scrape phase reports in).
-      if (state.status === "waiting-login") {
+      if (state.status === "checking") {
+        statusText = "Checking your Spotify sign-in…";
+      } else if (state.status === "waiting-login") {
         statusText = state.syncStage || "Waiting for login…";
       } else {
         statusText = state.syncStage || "Syncing…";
@@ -2922,7 +2927,7 @@ function activate(api) {
             // Login confirmed — leave the "waiting-login" state so the toolbar
             // switches from the login prompt to live scrape-stage messages.
             // (Before setAuth, so its re-render already shows the sync running.)
-            if (state.status === "waiting-login") state.status = "running";
+            if (state.status === "waiting-login" || state.status === "checking") state.status = "running";
             setAuth("signed-in", msg.data.account);
             // Hand control to fn. Route subsequent messages to its handler.
             Promise.resolve()
@@ -2958,9 +2963,11 @@ function activate(api) {
   // playlists by shelf. Resolves { playlists, sections, sectionDescriptions }
   // (no tracks — those are fetched lazily). Resolves null if cancelled / not
   // signed in.
-  function syncPlaylists(visible, trigger) {
+  //   quiet: never surface the window for a sign-in (see withSpotifyWindow);
+  //          a signed-out page rejects with SIGNED_OUT instead.
+  function syncPlaylists(visible, trigger, quiet) {
     beginReport(trigger || "sync");
-    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible }, function (h, ctx) {
+    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible, quiet: !!quiet }, function (h, ctx) {
       return new Promise(function (resolve) {
         // Give the SPA a moment to render the home shell before scraping.
         var done = false;
@@ -3322,18 +3329,25 @@ function activate(api) {
   // first-activation flow (trigger "first-run"). Opening the browse window
   // asks the user to sign in to Spotify (surfaced window + banner) if they
   // aren't already logged in.
-  function startSync(trigger) {
+  //   opts.quiet: a sync nobody asked for (the first activation). It checks
+  //   the sign-in in a hidden window and syncs only if Spotify is already
+  //   signed in; signed out, it ends quietly on the signed-out banner and
+  //   sidebar dot, and waits for the user's own Sign in / Sync. It never pops
+  //   a window up on its own — a fresh install happens inside the host's setup
+  //   wizard, which asks for the sign-in on its own step.
+  function startSync(trigger, opts) {
+    var quiet = !!(opts && opts.quiet);
     // A new sync supersedes any background prefetch still warming from a prior
     // refresh, so it doesn't lose the single browse window to a "busy" reject.
     cancelPrefetch();
-    state.status = "waiting-login";
+    state.status = quiet ? "checking" : "waiting-login";
     state.errorMessage = "";
     state.refreshSummary = "";
     state.refreshing = true;
     dbg("flow", "starting single-page sync", { trigger: trigger });
     render();
 
-    syncPlaylists(state.showBrowserOnRefresh, trigger).then(function(result) {
+    syncPlaylists(state.showBrowserOnRefresh && !quiet, trigger, quiet).then(function(result) {
       state.refreshing = false;
       if (!result) {
         state.syncStage = "";
@@ -3375,6 +3389,16 @@ function activate(api) {
     }).catch(function(err) {
       state.refreshing = false;
       state.syncStage = "";
+      // A quiet check that found no session (or couldn't tell) is not a
+      // failure: setAuth already put up the banner + dot when it saw a
+      // sign-in page, and the user's own Sync takes it from there.
+      if (quiet) {
+        plog("info", "flow", "quiet sync ended without syncing: " + (err.message || err));
+        state.status = "idle";
+        state.errorMessage = "";
+        render();
+        return;
+      }
       state.status = "error";
       state.errorMessage = "Sync failed: " + (err.message || err);
       recordCheckResult(0, 1);
@@ -4960,8 +4984,14 @@ function activate(api) {
       return {
         playlistCount: state.playlists.length,
         sections: state.sections,
+        // idle | checking | waiting-login | running | done | error
         syncStatus: state.status,
         lastCheckAt: state.lastCheckAt || null,
+        // The last sign-in evidence: "unknown" | "signed-in" | "signed-out",
+        // and the account name Spotify's page showed (null unless signed in).
+        // Read by the host's setup wizard to say who is connected.
+        auth: auth.state,
+        account: auth.account,
       };
     });
 
@@ -5084,12 +5114,12 @@ function activate(api) {
   }
 
   // One-shot first-activation hook: on a genuinely fresh install (no restored
-  // library, never synced), start the initial sync automatically instead of
-  // waiting for a manual Sync click. The sync's login-check flow then surfaces
-  // the embedded browser with the sign-in banner if the user isn't logged in
-  // to Spotify; with an existing session it completes headlessly. Guarded by a
-  // persisted flag so it runs at most once — established installs just set the
-  // flag silently and never see an unexpected popup.
+  // library, never synced), start a QUIET initial sync: with an existing
+  // Spotify session it completes headlessly; without one it stops on the
+  // signed-out banner and waits for the user's Sign in. It used to surface the
+  // sign-in window by itself, which on a fresh install landed in the middle of
+  // the host's setup wizard, steps before the wizard's own "Connect Spotify".
+  // Guarded by a persisted flag so it runs at most once.
   function maybeFirstRunLogin(hasData) {
     Promise.all([
       api.storage.get("spotify_browse_first_run_done"),
@@ -5100,9 +5130,8 @@ function activate(api) {
       if (alreadyDone) return;
       api.storage.set("spotify_browse_first_run_done", true).catch(console.error);
       if (hasData || (prefs && prefs.lastCheckAt)) return;
-      plog("info", "flow", "first activation — starting initial sync (sign-in prompt if needed)");
-      api.ui.showNotification("Spotify: loading your playlists — you'll be asked to sign in if needed.");
-      startSync("first-run");
+      plog("info", "flow", "first activation — quiet initial sync (no window unless already signed in)");
+      startSync("first-run", { quiet: true });
     }).catch(console.error);
   }
 
