@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.27.1
+- Each AI tool now says what it is about (its category), so Viboplr's in-app assistant can offer it alongside the app's own tools of the same kind instead of sending every tool at once. Viboplr versions that don't know the field ignore it.
+- The AI notes now name the app's home_shelves tool instead of HTTP routes an in-app assistant can't call.
+
 ## v1.27.0
 - **No surprise Spotify window after installing.** The first sync after a fresh
   install now checks your sign-in in the background. If you're already signed
