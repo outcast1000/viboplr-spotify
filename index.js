@@ -46,6 +46,13 @@ function activate(api) {
     // Cleared when the sync settles. Set via setSyncStage().
     syncStage: "",
     playlists: [],
+    // Playlist ids whose tracklist is being scraped right now. While it runs,
+    // state.playlistTracks holds the progressive (unsaved) list, and if the
+    // scrape falls back to the old tracks the list reverts. The image cache
+    // leaves these playlists alone: covers downloaded for a list that then
+    // reverted were handed to the host as paths and pruned a moment later,
+    // leaving queued tracks pointing at deleted files.
+    tracksLoading: {},
     playlistTracks: {},   // playlistId -> [{ name, artist, album, duration, imageUrl, spotifyId }]
     currentPlaylist: null,
     errorMessage: "",
@@ -515,7 +522,9 @@ function activate(api) {
             })
           );
         }
-        var tracks = state.playlistTracks[pl.id] || [];
+        // Mid-scrape the list is provisional (see state.tracksLoading): its rows
+        // keep their http image URLs, and settle() runs this again once it's saved.
+        var tracks = state.tracksLoading[pl.id] ? [] : (state.playlistTracks[pl.id] || []);
         for (var ti = 0; ti < tracks.length; ti++) {
           (function (track) {
             if (track.imageUrl && track.imageUrl.indexOf("http") === 0) {
@@ -576,6 +585,9 @@ function activate(api) {
   // touched. Reconciling the whole directory each refresh also sweeps historical
   // orphans accumulated before this fix shipped.
   function pruneOrphanTrackImages(pl) {
+    // A provisional list isn't the playlist's truth yet — pruning against it (or
+    // against what it may revert to) deletes covers still in use. settle() prunes.
+    if (state.tracksLoading[pl.id]) return Promise.resolve();
     var dir = playlistDir(pl);
     var tracks = state.playlistTracks[pl.id] || [];
     var expected = {};
@@ -3091,6 +3103,7 @@ function activate(api) {
         var gen = ctx.gen;
         var settled = false;
         var trackTimeout = null;
+        state.tracksLoading[pl.id] = true;
         var attempts = 0;
         var maxSteps = 60;
         var timeoutMs = 45000;
@@ -3098,6 +3111,7 @@ function activate(api) {
         function settle(tracks, descr, coverUrl) {
           if (settled) return;
           settled = true;
+          delete state.tracksLoading[pl.id];
           if (trackTimeout) { clearTimeout(trackTimeout); trackTimeout = null; }
           var finalTracks = tracks;
           // Keep-old guard: don't let an empty scrape clobber tracks we had.
@@ -3180,6 +3194,14 @@ function activate(api) {
           arm();
         }, 4000);
       });
+    }).then(function (tracks) {
+      delete state.tracksLoading[pl.id];
+      return tracks;
+    }, function (e) {
+      // The window failed before settle() ran: don't leave the playlist's
+      // images frozen out of the cache.
+      delete state.tracksLoading[pl.id];
+      throw e;
     });
   }
 

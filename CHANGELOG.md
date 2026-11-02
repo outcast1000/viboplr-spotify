@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.27.2
+- **Fix: queued tracks could lose their artwork after a playlist refresh.** While a playlist's tracklist was still loading (Discover Weekly on a Monday, say), another image-caching pass could download covers for the new rows and hand them to Viboplr as file paths. If the load then fell back to the old tracklist, the next clean-up deleted those covers, and the queue and now-playing bar pointed at missing files. The image cache now leaves a playlist alone until its tracklist has settled and been saved; until then its rows keep their Spotify image URLs.
+
+
 ## v1.27.1
 - Each AI tool now says what it is about (its category), so Viboplr's in-app assistant can offer it alongside the app's own tools of the same kind instead of sending every tool at once. Viboplr versions that don't know the field ignore it.
 - The AI notes now name the app's home_shelves tool instead of HTTP routes an in-app assistant can't call.
