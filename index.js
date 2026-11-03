@@ -2111,6 +2111,10 @@ function activate(api) {
     '})()';
   }
 
+  // Ticks (600ms each) the scroll loop waits at the bottom for rows the grid's
+  // aria-rowcount promised but hasn't rendered, before giving up (~5s).
+  var BOTTOM_STALL_TICKS = 8;
+
   function scriptScrollThenScrape(playlistId, gen, opts) {
     var maxSteps = (opts && opts.maxSteps) || 60;
     var entityPath = (opts && opts.kind === "album") ? "/album/"
@@ -2224,7 +2228,7 @@ function activate(api) {
       // at-bottom / max-steps exit applies unchanged.
       'function totalRows(){var g=document.querySelector("[data-testid=\\"playlist-tracklist\\"]")||document.querySelector("main [role=\\"grid\\"]");if(!g)return null;var rc=parseInt(g.getAttribute("aria-rowcount")||"",10);return rc>0?rc-1:null}' +
       // Incremental scroll: move one viewport at a time, scrape visible rows at each stop
-      'var allOut=[];var seenKeys={};var n=0;var maxSteps=' + maxSteps + ';' +
+      'var allOut=[];var seenKeys={};var n=0;var maxSteps=' + maxSteps + ';var _lastCount=0;var _stalls=0;' +
       'var step=Math.max(sc.clientHeight-50,200);' +
       'sc.scrollTop=0;' +
       'function parseVisibleRows(){' +
@@ -2269,11 +2273,22 @@ function activate(api) {
         // with the same track twice never reaches its total (rows dedupe by
         // Spotify id) and exits at the bottom as before.
         'var total=totalRows();var complete=total!==null&&allOut.length>=total;' +
-        'if(n%5===0)_dbg("tracks","scrolling",{tick:n,found:allOut.length,total:total,scrollTop:sc.scrollTop,scrollH:sc.scrollHeight,atBottom:atBottom});' +
+        // "At bottom" short of a known total means the page hasn't rendered the
+        // rest yet, not that the list ended: a song-radio page can open with a
+        // handful of rows and a scrollHeight one viewport tall, so the first
+        // step lands "at bottom" with 4 of 50 parsed (2026-11-04). Wait there,
+        // nudging the scroll so the virtualized grid loads more, and give up only
+        // after BOTTOM_STALL_TICKS ticks with no new row (a list holding the same
+        // track twice never reaches its total and exits that way).
+        'var grew=allOut.length>_lastCount;_lastCount=allOut.length;' +
+        'var waitingForRows=atBottom&&total!==null&&!complete;' +
+        'if(waitingForRows&&!grew){_stalls++}else{_stalls=0}' +
+        'var bottomDone=atBottom&&(!waitingForRows||_stalls>=' + BOTTOM_STALL_TICKS + ');' +
+        'if(n%5===0)_dbg("tracks","scrolling",{tick:n,found:allOut.length,total:total,scrollTop:sc.scrollTop,scrollH:sc.scrollHeight,atBottom:atBottom,stalls:_stalls});' +
         // Emit a running track count so the UI can show progress without waiting
         // for the full scrape (large playlists like Liked Songs can take minutes).
         'try{window.__viboplr.send("tracks-progress",{playlistId:"' + playlistId + '",found:allOut.length,total:total,tracks:allOut,gen:_gen})}catch(e){}' +
-        'if(atBottom||complete||n>=maxSteps){' +
+        'if(bottomDone||complete||n>=maxSteps){' +
           'parseVisibleRows();' +
           'var desc=readDescription();' +
           'if(allOut.length===0){' +
@@ -2286,7 +2301,10 @@ function activate(api) {
           '}' +
           '_dbg("tracks","=== DONE ' + playlistId + '",{parsed:allOut.length,total:total,complete:complete,steps:n,gen:_gen,desc:desc.substring(0,80),coverUrl:_coverUrl,coverRule:_coverRule,coverElement:_coverElement});' +
           'window.__viboplr.send("tracks",{playlistId:"' + playlistId + '",tracks:allOut,total:total,description:desc,coverUrl:_coverUrl,coverRule:_coverRule,coverElement:_coverElement,coverRuleAttempts:_coverRuleAttempts,gen:_gen});' +
-        '}else{sc.scrollTop+=step;setTimeout(tick,600)}' +
+        // While waiting at the bottom, alternate a small step up with the step
+        // down: scrolling past the end changes nothing and fires no scroll event,
+        // so the grid would never be asked for more rows.
+        '}else{if(waitingForRows&&_stalls%2===1){sc.scrollTop=Math.max(0,sc.scrollTop-200)}else{sc.scrollTop+=step}setTimeout(tick,600)}' +
       '}catch(e){' +
         '_dbg("tracks","=== ERROR in tick ' + playlistId + '",{error:""+e,step:n});' +
         'window.__viboplr.send("tracks",{playlistId:"' + playlistId + '",tracks:allOut,error:""+e,gen:_gen});' +

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.27.3
+- **Fix: Spotify radio could come back with only a few tracks.** A song-radio page sometimes opens with just a handful of rows rendered, so the scraper hit the bottom of the page on its first scroll and stopped, even though Spotify said the station had 50 tracks (“Start radio” on one song queued 5). When the page has said how many tracks it has, reaching the bottom early no longer ends the scrape: it waits there, nudging the scroll so Spotify loads the rest, and gives up only after about 5 seconds with no new row.
+
+
 ## v1.27.2
 - **Fix: queued tracks could lose their artwork after a playlist refresh.** While a playlist's tracklist was still loading (Discover Weekly on a Monday, say), another image-caching pass could download covers for the new rows and hand them to Viboplr as file paths. If the load then fell back to the old tracklist, the next clean-up deleted those covers, and the queue and now-playing bar pointed at missing files. The image cache now leaves a playlist alone until its tracklist has settled and been saved; until then its rows keep their Spotify image URLs.
 
