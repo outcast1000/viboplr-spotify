@@ -576,14 +576,60 @@ function activate(api) {
     }
   }
 
-  // Remove track-*.jpg files that no longer correspond to a track currently in
-  // the playlist. Expected filenames are recomputed from the live tracklist
-  // (same scheme as cacheAllImages), NOT read from track.coverFile — a track's
-  // coverFile is often null after a transient download failure while its image
-  // is validly on disk, so pruning by coverFile would delete still-valid files.
-  // Non-"track-*.jpg" files (meta.json, tracks.json, cover.jpg/svg) are never
-  // touched. Reconciling the whole directory each refresh also sweeps historical
-  // orphans accumulated before this fix shipped.
+  // Images this plugin handed the host as local paths outlive the list they
+  // came from: Home keeps a card (tracks, image paths and all) for up to a
+  // day, the queue and Latest play persist theirs. Deleting a file the moment
+  // its track leaves a playlist left all of those pointing at nothing — a
+  // rotated mix's Home card played with a third of its covers missing. So an
+  // orphaned image (or a playlist that left its section) is kept this long
+  // after it was first seen orphaned, then removed.
+  var ORPHAN_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+  var ORPHANS_FILE = "orphans.json";
+  var RETIRED_FILE = "retired.json";
+
+  // Pure: which track-*.jpg files in `entries` to delete now. `expected` is a
+  // set (object) of the filenames the live tracklist uses; `orphans` maps a
+  // filename to when it was first seen unused (ms). Returns the files to
+  // remove, the updated map, and whether the map changed (so the caller only
+  // writes it when it has to).
+  function planOrphanPrune(entries, expected, orphans, nowMs, graceMs) {
+    var next = {};
+    var remove = [];
+    var changed = false;
+    var listed = {};
+    for (var j = 0; j < (entries || []).length; j++) {
+      var e = entries[j];
+      if (!e || e.isDir) continue;
+      var name = e.name;
+      if (name.indexOf("track-") !== 0) continue;
+      if (name.lastIndexOf(".jpg") !== name.length - 4) continue;
+      listed[name] = true;
+      if (expected[name]) {
+        if (orphans && orphans[name] != null) changed = true;
+        continue;
+      }
+      var since = orphans && typeof orphans[name] === "number" ? orphans[name] : null;
+      if (since === null) {
+        next[name] = nowMs;
+        changed = true;
+      } else if (nowMs - since >= graceMs) {
+        remove.push(name);
+        changed = true;
+      } else {
+        next[name] = since;
+      }
+    }
+    for (var k in orphans || {}) {
+      if (Object.prototype.hasOwnProperty.call(orphans, k) && !listed[k]) changed = true;
+    }
+    return { remove: remove, orphans: next, changed: changed };
+  }
+
+  // Expected filenames are recomputed from the live tracklist (same scheme as
+  // cacheAllImages), NOT read from track.coverFile — a track's coverFile is
+  // often null after a transient download failure while its image is validly
+  // on disk. Non-"track-*.jpg" files (meta.json, tracks.json, cover.jpg/svg,
+  // orphans.json) are never touched.
   function pruneOrphanTrackImages(pl) {
     // A provisional list isn't the playlist's truth yet — pruning against it (or
     // against what it may revert to) deletes covers still in use. settle() prunes.
@@ -593,30 +639,31 @@ function activate(api) {
     var expected = {};
     for (var i = 0; i < tracks.length; i++) {
       var t = tracks[i];
-      // Mirror the filename expression at cacheAllImages (index.js:544) EXACTLY
-      // (no || "" guards) — any divergence would hash differently and delete a
-      // valid file.
+      // Mirror the filename expression at cacheAllImages EXACTLY (no || ""
+      // guards) — any divergence would hash differently and delete a valid file.
       expected["track-" + djb2Hash(t.name + " - " + t.artist) + ".jpg"] = true;
     }
-    return api.storage.files.list(dir).then(function (entries) {
-      if (!entries || !entries.length) return;
-      var removals = [];
-      for (var j = 0; j < entries.length; j++) {
-        var e = entries[j];
-        if (e.isDir) continue;
-        if (e.name.indexOf("track-") !== 0) continue;
-        if (e.name.lastIndexOf(".jpg") !== e.name.length - 4) continue;
-        if (expected[e.name]) continue;
-        (function (fname) {
-          removals.push(
-            api.storage.files.remove(dir.concat([fname])).catch(console.error)
-          );
-        })(e.name);
+    return Promise.all([
+      api.storage.files.list(dir),
+      api.storage.files.readJson(dir.concat([ORPHANS_FILE])).catch(function (e) {
+        // An unreadable record restarts every orphan's clock — keeps files
+        // longer, never deletes one early.
+        console.error("Failed to read " + ORPHANS_FILE + " for " + pl.name + ":", e);
+        return null;
+      }),
+    ]).then(function (res) {
+      var plan = planOrphanPrune(res[0], expected, res[1] || {}, Date.now(), ORPHAN_GRACE_MS);
+      var work = [];
+      for (var r = 0; r < plan.remove.length; r++) {
+        work.push(api.storage.files.remove(dir.concat([plan.remove[r]])).catch(console.error));
       }
-      if (removals.length > 0) {
-        dbg("images", "pruned " + removals.length + " orphan track images for \"" + pl.name + "\"");
+      if (plan.remove.length > 0) {
+        dbg("images", "pruned " + plan.remove.length + " track images orphaned over a week for \"" + pl.name + "\"");
       }
-      return Promise.all(removals);
+      if (plan.changed) {
+        work.push(api.storage.files.writeJson(dir.concat([ORPHANS_FILE]), plan.orphans).catch(console.error));
+      }
+      return Promise.all(work);
     }).catch(console.error);
   }
 
@@ -682,7 +729,10 @@ function activate(api) {
     ]).then(function (results) {
       var meta = results[0];
       var tracks = results[1] || [];
-      if (!meta) return null;
+      if (!meta) {
+        sweepRetiredPlaylistDir(dir);
+        return null;
+      }
 
       // Resolve cover path
       var coverP = meta.coverFile
@@ -730,11 +780,36 @@ function activate(api) {
     });
   }
 
-  // Delete all on-disk data for a playlist (used when a refresh no longer
-  // returns it from its section).
+  // A playlist a refresh no longer returns from its section (a daily mix that
+  // rotated out). Its meta.json / tracks.json go now, so it stops loading, but
+  // its images stay for ORPHAN_GRACE_MS: a Home card, the queue or Latest play
+  // may still show them. The folder itself is removed by the loader's sweep
+  // once that has passed (sweepRetiredPlaylistDir).
   function deletePlaylistFiles(pl) {
-    return api.storage.files.remove(playlistDir(pl)).catch(function (e) {
-      console.error("Failed to delete playlist dir:", pl.id, e);
+    var dir = playlistDir(pl);
+    return api.storage.files.writeJson(dir.concat([RETIRED_FILE]), { retiredAt: Date.now() }).then(function () {
+      return Promise.all([
+        api.storage.files.remove(dir.concat(["meta.json"])),
+        api.storage.files.remove(dir.concat(["tracks.json"])),
+      ]);
+    }).catch(function (e) {
+      console.error("Failed to retire playlist dir:", pl.id, e);
+    });
+  }
+
+  // Pure: has a retired folder's grace period run out? A folder with no
+  // retired.json (or an unreadable one) is never swept — it isn't ours to judge.
+  function retiredDirExpired(marker, nowMs, graceMs) {
+    return !!marker && typeof marker.retiredAt === "number" && nowMs - marker.retiredAt >= graceMs;
+  }
+
+  function sweepRetiredPlaylistDir(dir) {
+    api.storage.files.readJson(dir.concat([RETIRED_FILE])).then(function (marker) {
+      if (!retiredDirExpired(marker, Date.now(), ORPHAN_GRACE_MS)) return;
+      dbg("images", "removing playlist folder retired over a week ago: " + dir.join("/"));
+      return api.storage.files.remove(dir);
+    }).catch(function (e) {
+      console.error("Failed to sweep retired playlist dir:", dir.join("/"), e);
     });
   }
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.27.4
+- **Fix: a rotated mix's Home card could play with covers missing.** Viboplr keeps a Home card — its tracks and their cover files — for up to a day, and the queue and Latest play keep theirs longer. When a mix refreshed with new songs, the covers of the songs it dropped were deleted at once, so playing that card left a third of the queue on placeholders. A cover that stops being used is now kept for a week before it is cleaned up (recorded in the playlist folder's `orphans.json`), and a playlist that leaves its shelf keeps its covers for a week too instead of losing its whole folder immediately.
+
+
 ## v1.27.3
 - **Fix: Spotify radio could come back with only a few tracks.** A song-radio page sometimes opens with just a handful of rows rendered, so the scraper hit the bottom of the page on its first scroll and stopped, even though Spotify said the station had 50 tracks (“Start radio” on one song queued 5). When the page has said how many tracks it has, reaching the bottom early no longer ends the scrape: it waits there, nudging the scroll so Spotify loads the rest, and gives up only after about 5 seconds with no new row.
 
