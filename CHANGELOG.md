@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.27.5
+- **Fix: "Spotify is busy" for hours.** Before loading anything, the plugin waits until Spotify's page says whether you're signed in. If the page never said either way, that wait had no end: the hidden window stayed open and every playlist, Home card and refresh was refused with "Spotify is busy" until Viboplr restarted (or the plugin was turned off and on). The wait now gives up after 90 seconds while the window is hidden ("Spotify didn't finish loading — try again in a moment"); once the sign-in window is on screen it still waits for you.
+- The background warm-up of recently opened playlists after a refresh now runs quietly: it never pops up a sign-in window, and gives up after 25 seconds instead of holding the window.
+
 ## v1.27.4
 - **Fix: a rotated mix's Home card could play with covers missing.** Viboplr keeps a Home card — its tracks and their cover files — for up to a day, and the queue and Latest play keep theirs longer. When a mix refreshed with new songs, the covers of the songs it dropped were deleted at once, so playing that card left a third of the queue on placeholders. A cover that stops being used is now kept for a week before it is cleaned up (recorded in the playlist folder's `orphans.json`), and a playlist that leaves its shelf keeps its covers for a week too instead of losing its whole folder immediately.
 

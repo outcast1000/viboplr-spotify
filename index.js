@@ -20,6 +20,14 @@ function activate(api) {
   // only a retry throttle — what the UI shows is `auth` below.
   var SIGNED_OUT = "Not signed in to Spotify";
   var QUIET_LOGIN_BUDGET_MS = 25000;
+  // The same bound for a user-facing open, while the window is still hidden
+  // (the page has said neither "signed in" nor "signed out"). Longer than the
+  // quiet one because a cold Spotify page can take a while, but finite: an
+  // unbounded wait held the single window (windowBusy) for hours, and every
+  // view, play and refresh was refused "Spotify is busy" until a restart.
+  // Once the sign-in window is on screen the wait is the user's and stays open
+  // — they sign in or close it.
+  var LOGIN_BUDGET_MS = 90000;
   var signedOutUntil = 0;
   // Last known Spotify sign-in, from real evidence only: a login check that
   // confirmed it (signed-in, with the account name when the page showed one)
@@ -2904,10 +2912,11 @@ function activate(api) {
 
   // <<< SCRAPE-SCRIPTS-END
 
-  //   quiet:   background use (an info-section lookup). Never surface the
-  //            window for sign-in: an affirmative signed-out reading rejects
-  //            with SIGNED_OUT instead, and a login check that never settles
-  //            rejects after QUIET_LOGIN_BUDGET_MS rather than polling forever.
+  //   quiet:   background use (an info-section lookup, the prefetch). Never
+  //            surface the window for sign-in: an affirmative signed-out
+  //            reading rejects with SIGNED_OUT instead, and a login check that
+  //            never settles rejects after QUIET_LOGIN_BUDGET_MS. A non-quiet
+  //            open gets LOGIN_BUDGET_MS while its window is still hidden.
   function withSpotifyWindow(opts, fn) {
     var url = (opts && opts.url) || MUSIC_CHIP_URL;
     var visible = !!(opts && opts.visible);
@@ -3051,9 +3060,10 @@ function activate(api) {
           }
           loginRetries++;
           if (loginRetries > LOGIN_GRACE_POLLS) promptForLogin();
-          if (quiet && loginRetries * 3000 > QUIET_LOGIN_BUDGET_MS) {
+          var budget = quiet ? QUIET_LOGIN_BUDGET_MS : LOGIN_BUDGET_MS;
+          if (!loginPromptShown && loginRetries * 3000 > budget) {
             plog("warn", "login", lastLoginCheck ? "login check never settled; last reading" : "login check never settled; the page sent no reading", lastLoginCheck);
-            failWith(new Error("Spotify login check timed out"));
+            failWith(new Error("Spotify didn't finish loading — try again in a moment"));
             return;
           }
           h.eval(SCRIPT_CHECK_LOGIN);
@@ -3189,9 +3199,10 @@ function activate(api) {
       return Promise.resolve(state.playlistTracks[pl.id] || []);
     }
     var visible = !!(opts && opts.visible);
+    var quiet = !!(opts && opts.quiet);
     var oldTracks = state.playlistTracks[pl.id] || [];
 
-    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible }, function (h, ctx) {
+    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible, quiet: quiet }, function (h, ctx) {
       return new Promise(function (resolve) {
         var gen = ctx.gen;
         var settled = false;
@@ -3393,7 +3404,9 @@ function activate(api) {
       return chain.then(function () {
         if (prefetchToken !== myToken) return;   // superseded or cancelled
         if (tracksAreFresh(pl)) return;          // already warm — no window needed
-        return ensureTracks(pl).catch(function (e) {
+        // Quiet: background work must never pop a sign-in window nor hold the
+        // single window waiting on a page that never loads.
+        return ensureTracks(pl, { quiet: true }).catch(function (e) {
           plog("warn", "prefetch", "warm failed for \"" + pl.name + "\": " + (e && e.message ? e.message : e));
         });
       });
