@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.29.1
+- **Start radio** and **Play the Full Album** now say which shared action they are, so Viboplr groups them with its own and other plugins' versions in one menu row ("Start radio ▸ Library / Last.fm / Spotify") instead of listing them side by side. Older Viboplr versions show the menu as before.
+
 ## v1.29.0
 - **Spotify play counts in Now Playing.** A new item, **Plays (Spotify)**, for the line under the song title (Settings → Playback → Now playing info): "990k plays on Spotify". It is off until you switch it on. While it's on, the plugin looks up the next song in your queue while the current one plays, so the count is there when the song starts — which is what the new "what's playing and what's queued" permission is for. The same lookup also has that song's credits and Spotify lyrics ready.
 - Counts are written like Last.fm's ("100k plays on Last.fm"), so the two read alike.

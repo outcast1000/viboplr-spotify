@@ -5092,6 +5092,9 @@ function activate(api) {
       id: "start-spotify-radio",
       label: "Start radio",
       targets: ["track"],
+      // Groups it with the app's own radio and other plugins' ("Start radio ▸
+      // Library / Last.fm / Spotify"); older apps ignore it and merge by label.
+      action: "radio",
     });
   }
   if (api.contextMenu && typeof api.contextMenu.onAction === "function") {
@@ -5385,6 +5388,9 @@ function activate(api) {
       id: "play-spotify-album",
       label: "Play the Full Album",
       targets: ["track"],
+      // Shared action: grouped with other providers of the full album; older
+      // apps ignore it and merge by label.
+      action: "play-full-album",
     });
   }
   if (api.contextMenu && typeof api.contextMenu.onAction === "function") {
