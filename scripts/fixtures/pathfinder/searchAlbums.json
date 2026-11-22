@@ -1,0 +1,217 @@
+{
+ "recorded": "2026-11-22 open.spotify.com (spotify-browse spike)",
+ "op": "searchAlbums",
+ "variables": {
+  "includePreReleases": false,
+  "includeAlbumPreReleases": false,
+  "numberOfTopResults": 20,
+  "searchTerm": "radiohead ok computer",
+  "offset": 0,
+  "limit": 30,
+  "includeAudiobooks": true,
+  "includeAuthors": true,
+  "includeEpisodeContentRatingsV2": true
+ },
+ "data": {
+  "searchV2": {
+   "albumsV2": {
+    "items": [
+     {
+      "__typename": "AlbumResponseWrapper",
+      "data": {
+       "__typename": "Album",
+       "artists": {
+        "items": [
+         {
+          "profile": {
+           "name": "Radiohead"
+          },
+          "uri": "spotify:artist:4Z8W4fKeB5YxbusRsdQVPb"
+         }
+        ]
+       },
+       "coverArt": {
+        "sources": [
+         {
+          "height": 300,
+          "url": "https://i.scdn.co/image/ab67616d00001e02c8b444df094279e70d0ed856",
+          "width": 300
+         },
+         {
+          "height": 64,
+          "url": "https://i.scdn.co/image/ab67616d00004851c8b444df094279e70d0ed856",
+          "width": 64
+         },
+         {
+          "height": 640,
+          "url": "https://i.scdn.co/image/ab67616d0000b273c8b444df094279e70d0ed856",
+          "width": 640
+         }
+        ]
+       },
+       "date": {
+        "year": 1997
+       },
+       "isAlbumPreRelease": false,
+       "name": "OK Computer",
+       "playability": {
+        "playable": true,
+        "reason": "PLAYABLE"
+       },
+       "preReleaseEndDateTime": null,
+       "type": "ALBUM",
+       "uri": "spotify:album:6dVIqQ8qmQ5GBnJ9shOYGE"
+      }
+     },
+     {
+      "__typename": "AlbumResponseWrapper",
+      "data": {
+       "__typename": "Album",
+       "artists": {
+        "items": [
+         {
+          "profile": {
+           "name": "Radiohead"
+          },
+          "uri": "spotify:artist:4Z8W4fKeB5YxbusRsdQVPb"
+         }
+        ]
+       },
+       "coverArt": {
+        "sources": [
+         {
+          "height": 300,
+          "url": "https://i.scdn.co/image/ab67616d00001e02ee58b8ce747da91d69a862cc",
+          "width": 300
+         },
+         {
+          "height": 64,
+          "url": "https://i.scdn.co/image/ab67616d00004851ee58b8ce747da91d69a862cc",
+          "width": 64
+         },
+         {
+          "height": 640,
+          "url": "https://i.scdn.co/image/ab67616d0000b273ee58b8ce747da91d69a862cc",
+          "width": 640
+         }
+        ]
+       },
+       "date": {
+        "year": 2017
+       },
+       "isAlbumPreRelease": false,
+       "name": "OK Computer OKNOTOK 1997 2017",
+       "playability": {
+        "playable": true,
+        "reason": "PLAYABLE"
+       },
+       "preReleaseEndDateTime": null,
+       "type": "ALBUM",
+       "uri": "spotify:album:0tzfI6NFJqcJkWb23R3lRZ"
+      }
+     },
+     {
+      "__typename": "AlbumResponseWrapper",
+      "data": {
+       "__typename": "Album",
+       "artists": {
+        "items": [
+         {
+          "profile": {
+           "name": "Radiohead"
+          },
+          "uri": "spotify:artist:4Z8W4fKeB5YxbusRsdQVPb"
+         }
+        ]
+       },
+       "coverArt": {
+        "sources": [
+         {
+          "height": 300,
+          "url": "https://i.scdn.co/image/ab67616d00001e026c7112082b63beefffe40151",
+          "width": 300
+         },
+         {
+          "height": 64,
+          "url": "https://i.scdn.co/image/ab67616d000048516c7112082b63beefffe40151",
+          "width": 64
+         },
+         {
+          "height": 640,
+          "url": "https://i.scdn.co/image/ab67616d0000b2736c7112082b63beefffe40151",
+          "width": 640
+         }
+        ]
+       },
+       "date": {
+        "year": 2000
+       },
+       "isAlbumPreRelease": false,
+       "name": "Kid A",
+       "playability": {
+        "playable": true,
+        "reason": "PLAYABLE"
+       },
+       "preReleaseEndDateTime": null,
+       "type": "ALBUM",
+       "uri": "spotify:album:6GjwtEZcfenmOf6l18N7T7"
+      }
+     },
+     {
+      "__typename": "AlbumResponseWrapper",
+      "data": {
+       "__typename": "Album",
+       "artists": {
+        "items": [
+         {
+          "profile": {
+           "name": "Molotov Cocktail Piano"
+          },
+          "uri": "spotify:artist:72fQWyXObQBgUIUejMo6js"
+         }
+        ]
+       },
+       "coverArt": {
+        "sources": [
+         {
+          "height": 300,
+          "url": "https://i.scdn.co/image/ab67616d00001e02d9fd102b0b1df148100e1672",
+          "width": 300
+         },
+         {
+          "height": 64,
+          "url": "https://i.scdn.co/image/ab67616d00004851d9fd102b0b1df148100e1672",
+          "width": 64
+         },
+         {
+          "height": 640,
+          "url": "https://i.scdn.co/image/ab67616d0000b273d9fd102b0b1df148100e1672",
+          "width": 640
+         }
+        ]
+       },
+       "date": {
+        "year": 2017
+       },
+       "isAlbumPreRelease": false,
+       "name": "MCP Performs Radiohead: OK Computer (Instrumental Version)",
+       "playability": {
+        "playable": true,
+        "reason": "PLAYABLE"
+       },
+       "preReleaseEndDateTime": null,
+       "type": "ALBUM",
+       "uri": "spotify:album:5pENEl0DGwi6kkiaft2D73"
+      }
+     }
+    ],
+    "pagingInfo": {
+     "limit": 30,
+     "nextOffset": 30
+    },
+    "totalCount": 103
+   },
+   "query": "radiohead ok computer"
+  }
+ }
+}

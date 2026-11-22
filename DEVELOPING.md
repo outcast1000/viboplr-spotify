@@ -261,6 +261,18 @@ The older single-feature harnesses (`verify:scrape`, `verify:radio`,
 `verify:search`, `verify:liked`) still work and print more detail for their
 one feature.
 
+`npm run verify:direct` covers the direct reads (`scriptDirectTracks`,
+`scriptPathfinder`; SPEC.md): Liked Songs, a playlist, a playlist over 100
+tracks (paging), an album and a song radio, each compared with the page path of
+the same list, then the plugin's own flows through the real `index.js` in the
+fake host — tracklists, radio and song search once as shipped and once with the
+direct read's requests refused (each must fall back to its page path), and a
+Sync, which must read Home directly. `verify:all` has a `direct-*` check next to
+each page check; the mappers are unit-tested in `scripts/direct.test.mjs`
+against recorded responses (`scripts/fixtures/pathfinder/`, Home anonymised —
+re-anonymise if you re-record it). `VERIFY_SKIP_SCRAPE=1` skips the slow comparisons;
+`VERIFY_PLAYLIST` / `VERIFY_BIG_PLAYLIST` / `VERIFY_ALBUM_ID` pick the lists.
+
 ---
 
 ## 6. Cleaning up (`deactivate`)

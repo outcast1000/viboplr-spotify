@@ -1,0 +1,2767 @@
+{
+ "recorded": "2026-11-22 open.spotify.com (spotify-browse spike)",
+ "op": "home",
+ "variables": {
+  "includeHomeChapterVideoCards": false,
+  "homeEndUserIntegration": "INTEGRATION_WEB_PLAYER",
+  "timeZone": "Europe/Athens",
+  "facet": "music-chip",
+  "sectionItemsLimit": 10,
+  "includeEpisodeContentRatingsV2": true
+ },
+ "data": {
+  "home": {
+   "__typename": "HomeResponsePayload",
+   "sectionContainer": {
+    "sections": {
+     "items": [
+      {
+       "data": {
+        "__typename": "HomeShortsSectionData"
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "topic-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/topic/reggae/2QsynagSdAqZj3U9HgDzjD/en-GB",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 1",
+            "uri": "spotify:playlist:pl00000000000000000001"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000001"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artist-mix-reader",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/artistmix/0uZ3J25gXOjQAfBi9XVe7j/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 2",
+            "uri": "spotify:playlist:pl00000000000000000002"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000002"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 150
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 3",
+            "uri": "spotify:playlist:pl00000000000000000003"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000003"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "topic-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/topic/punk/1ZVACPeq7ccGCoUXwtafUU/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 4",
+            "uri": "spotify:playlist:pl00000000000000000004"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000004"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": 10
+        },
+        "totalCount": 12
+       },
+       "uri": "spotify:section:se00000000000000000005"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "subtitle": {
+         "transformedLabel": "",
+         "translatedBaseText": null
+        },
+        "title": {
+         "transformedLabel": "Made For You",
+         "translatedBaseText": "Made For You"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "daily-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/1/ab6761610000e5ebf4b9787b85d70878ad40a713/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 5",
+            "uri": "spotify:playlist:pl00000000000000000006"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000006"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "daily-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/2/ab67616d0000b273b28b01c1dc88dd86c7a03ecf/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 6",
+            "uri": "spotify:playlist:pl00000000000000000007"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000007"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "daily-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/3/7cd89d388e28bed16e0798a990a1aa80d50083f0/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 7",
+            "uri": "spotify:playlist:pl00000000000000000008"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000008"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "daily-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/4/ab6761610000e5ebe8fe6162d85f56cdf39b5bbb/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 8",
+            "uri": "spotify:playlist:pl00000000000000000009"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000009"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 9
+       },
+       "uri": "spotify:section:se00000000000000000010"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "subtitle": {
+         "transformedLabel": "",
+         "translatedBaseText": null
+        },
+        "title": {
+         "transformedLabel": "Your top mixes",
+         "translatedBaseText": "Your top mixes"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artist-mix-reader",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/artistmix/5Z4mEhHsWHyS10omStJ81u/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 9",
+            "uri": "spotify:playlist:pl00000000000000000011"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000011"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artist-mix-reader",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/artistmix/7lQKE6HaKQcCsgLRMhsh5W/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 10",
+            "uri": "spotify:playlist:pl00000000000000000012"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000012"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "topic-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/topic/two_thousands/3QJzdZJYIAcoET1GcfpNGi/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 11",
+            "uri": "spotify:playlist:pl00000000000000000013"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000013"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "topic-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/topic/rock/7jy3rLJdDQY21OgRLCZ9sD/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 12",
+            "uri": "spotify:playlist:pl00000000000000000014"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000014"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": 10
+        },
+        "totalCount": 13
+       },
+       "uri": "spotify:section:se00000000000000000015"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "subtitle": {
+         "transformedLabel": "Non-stop music based on your favorite songs and artists.",
+         "translatedBaseText": "Non-stop music based on your favorite songs and artists."
+        },
+        "title": {
+         "transformedLabel": "Recommended Stations",
+         "translatedBaseText": "Recommended Stations"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "inspiredby-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/radio/artist/6jP9Z7o6WlbYvKUOeO5SbP/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 13",
+            "uri": "spotify:playlist:pl00000000000000000016"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000016"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "inspiredby-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/radio/artist/6GI52t8N5F02MxU0g5U69P/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 14",
+            "uri": "spotify:playlist:pl00000000000000000017"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000017"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "inspiredby-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/radio/artist/75mafsNqNE1WSEVxIKuY5C/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 15",
+            "uri": "spotify:playlist:pl00000000000000000018"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000018"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "inspiredby-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/radio/artist/0baGqHSXVphCsotxWDv7NX/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 16",
+            "uri": "spotify:playlist:pl00000000000000000019"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000019"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": 10
+        },
+        "totalCount": 20
+       },
+       "uri": "spotify:section:se00000000000000000020"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "ArtistResponseWrapper",
+         "_uri": "spotify:artist:ar00000000000000000021",
+         "data": {
+          "__typename": "Artist",
+          "profile": {
+           "name": "Artist A"
+          },
+          "uri": "spotify:artist:ar00000000000000000021"
+         }
+        },
+        "subtitle": {
+         "transformedLabel": "",
+         "translatedBaseText": null
+        },
+        "title": {
+         "transformedLabel": "More like Artist A",
+         "translatedBaseText": "More like Artist A"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist B"
+               },
+               "uri": "spotify:artist:ar00000000000000000022"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 1",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000023"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000023"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "inspiredby-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/radio/artist/0CIwCGmQMqHqiblnZlFia1/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 17",
+            "uri": "spotify:playlist:pl00000000000000000024"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000024"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist B"
+               },
+               "uri": "spotify:artist:ar00000000000000000022"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 2",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000025"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000025"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 18",
+            "uri": "spotify:playlist:pl00000000000000000026"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000026"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": 10
+        },
+        "totalCount": 12
+       },
+       "uri": "spotify:section:se00000000000000000027"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "ArtistResponseWrapper",
+         "_uri": "spotify:artist:ar00000000000000000028",
+         "data": {
+          "__typename": "Artist",
+          "profile": {
+           "name": "Artist C"
+          },
+          "uri": "spotify:artist:ar00000000000000000028"
+         }
+        },
+        "subtitle": {
+         "transformedLabel": "",
+         "translatedBaseText": null
+        },
+        "title": {
+         "transformedLabel": "More like Artist C",
+         "translatedBaseText": "More like Artist C"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist D"
+               },
+               "uri": "spotify:artist:ar00000000000000000029"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 3",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000030"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000030"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 125
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 19",
+            "uri": "spotify:playlist:pl00000000000000000031"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000031"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist E"
+               },
+               "uri": "spotify:artist:ar00000000000000000032"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 4",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000033"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000033"
+         },
+         {
+          "content": {
+           "__typename": "ArtistResponseWrapper",
+           "data": {
+            "__typename": "Artist",
+            "profile": {
+             "name": "Artist F"
+            },
+            "uri": "spotify:artist:ar00000000000000000034"
+           }
+          },
+          "data": null,
+          "uri": "spotify:artist:ar00000000000000000034"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": 10
+        },
+        "totalCount": 12
+       },
+       "uri": "spotify:section:se00000000000000000035"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "subtitle": {
+         "transformedLabel": "Bringing together the top songs from an artist.",
+         "translatedBaseText": "Bringing together the top songs from an artist."
+        },
+        "title": {
+         "transformedLabel": "Best of artists",
+         "translatedBaseText": "Best of artists"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artistsets",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/6GI52t8N5F02MxU0g5U69P/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 20",
+            "uri": "spotify:playlist:pl00000000000000000036"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000036"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artistsets",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/3QJzdZJYIAcoET1GcfpNGi/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 21",
+            "uri": "spotify:playlist:pl00000000000000000037"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000037"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artistsets",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/6FXMGgJwohJLUSr5nVlf9X/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 22",
+            "uri": "spotify:playlist:pl00000000000000000038"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000038"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artistsets",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/0k17h0D3J5VfsdmQ1iZtE9/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 23",
+            "uri": "spotify:playlist:pl00000000000000000039"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000039"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": 10
+        },
+        "totalCount": 20
+       },
+       "uri": "spotify:section:se00000000000000000040"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "subtitle": {
+         "transformedLabel": "",
+         "translatedBaseText": null
+        },
+        "title": {
+         "transformedLabel": "Albums featuring songs you like",
+         "translatedBaseText": "Albums featuring songs you like"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist G"
+               },
+               "uri": "spotify:artist:ar00000000000000000041"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 5",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000042"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000042"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist H"
+               },
+               "uri": "spotify:artist:ar00000000000000000043"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 6",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000044"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000044"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist I"
+               },
+               "uri": "spotify:artist:ar00000000000000000045"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 7",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000046"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000046"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist C"
+               },
+               "uri": "spotify:artist:ar00000000000000000028"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 8",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000047"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000047"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 9
+       },
+       "uri": "spotify:section:se00000000000000000048"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "ArtistResponseWrapper",
+         "_uri": "spotify:artist:ar00000000000000000028",
+         "data": {
+          "__typename": "Artist",
+          "profile": {
+           "name": "Artist C"
+          },
+          "uri": "spotify:artist:ar00000000000000000028"
+         }
+        },
+        "subtitle": {
+         "transformedLabel": "",
+         "translatedBaseText": null
+        },
+        "title": {
+         "transformedLabel": "Discover more from Artist C",
+         "translatedBaseText": "Discover more from Artist C"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artistsets",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/7lQKE6HaKQcCsgLRMhsh5W/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 24",
+            "uri": "spotify:playlist:pl00000000000000000049"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000049"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "inspiredby-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/radio/artist/7lQKE6HaKQcCsgLRMhsh5W/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 25",
+            "uri": "spotify:playlist:pl00000000000000000050"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000050"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 80
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 26",
+            "uri": "spotify:playlist:pl00000000000000000051"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000051"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 100
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "format-shows-shuffle",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 27",
+            "uri": "spotify:playlist:pl00000000000000000052"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000052"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 7
+       },
+       "uri": "spotify:section:se00000000000000000053"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "subtitle": {
+         "transformedLabel": "Unwind with these calming playlists.",
+         "translatedBaseText": "Unwind with these calming playlists."
+        },
+        "title": {
+         "transformedLabel": "Chill",
+         "translatedBaseText": "Chill"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 75
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 28",
+            "uri": "spotify:playlist:pl00000000000000000054"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000054"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 80
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 29",
+            "uri": "spotify:playlist:pl00000000000000000055"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000055"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 100
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 30",
+            "uri": "spotify:playlist:pl00000000000000000056"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000056"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 75
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 31",
+            "uri": "spotify:playlist:pl00000000000000000057"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000057"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": 10
+        },
+        "totalCount": 20
+       },
+       "uri": "spotify:section:se00000000000000000058"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "subtitle": {
+         "transformedLabel": "Inspired by your recent activity",
+         "translatedBaseText": "Inspired by your recent activity"
+        },
+        "title": {
+         "transformedLabel": "Based on your recent listening",
+         "translatedBaseText": "Based on your recent listening"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 100
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 32",
+            "uri": "spotify:playlist:pl00000000000000000059"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000059"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 33",
+            "uri": "spotify:playlist:pl00000000000000000060"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000060"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 100
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 34",
+            "uri": "spotify:playlist:pl00000000000000000061"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000061"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 35",
+            "uri": "spotify:playlist:pl00000000000000000026"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000026"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": 10
+        },
+        "totalCount": 15
+       },
+       "uri": "spotify:section:se00000000000000000062"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Made for you",
+         "translatedBaseText": "Made for you"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artist-mix-reader",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/artistmix/01PtFYBOBK0tlxt4WZXiYw/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 36",
+            "uri": "spotify:playlist:pl00000000000000000063"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000063"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000064"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Made for you",
+         "translatedBaseText": "Made for you"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "inspiredby-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/radio/track/3NoOwvxhI2yMYknxqnFUVx/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 37",
+            "uri": "spotify:playlist:pl00000000000000000065"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000065"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000066"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Made for you",
+         "translatedBaseText": "Made for you"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "topic-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/topic/moody/7jy3rLJdDQY21OgRLCZ9sD/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 38",
+            "uri": "spotify:playlist:pl00000000000000000067"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000067"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000068"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Made for you",
+         "translatedBaseText": "Made for you"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "inspiredby-mix",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/radio/track/6eRGup7iLpPqHqTzRlDriz/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 39",
+            "uri": "spotify:playlist:pl00000000000000000069"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000069"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000070"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "More like Artist J",
+         "translatedBaseText": "More like Artist J"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 100
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 40",
+            "uri": "spotify:playlist:pl00000000000000000071"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000071"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000072"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "ArtistResponseWrapper",
+         "_uri": "spotify:artist:ar00000000000000000073",
+         "data": {
+          "__typename": "Artist",
+          "profile": {
+           "name": "Artist K"
+          },
+          "uri": "spotify:artist:ar00000000000000000073"
+         }
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "More like Artist K",
+         "translatedBaseText": "More like Artist K"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist L"
+               },
+               "uri": "spotify:artist:ar00000000000000000074"
+              },
+              {
+               "profile": {
+                "name": "Artist M"
+               },
+               "uri": "spotify:artist:ar00000000000000000075"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 9",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000076"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000076"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000077"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Based on your recent listening",
+         "translatedBaseText": "Based on your recent listening"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 41",
+            "uri": "spotify:playlist:pl00000000000000000060"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000060"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000078"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "ArtistResponseWrapper",
+         "_uri": "spotify:artist:ar00000000000000000073",
+         "data": {
+          "__typename": "Artist",
+          "profile": {
+           "name": "Artist K"
+          },
+          "uri": "spotify:artist:ar00000000000000000073"
+         }
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "More like Artist K",
+         "translatedBaseText": "More like Artist K"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "artists": {
+             "items": [
+              {
+               "profile": {
+                "name": "Artist N"
+               },
+               "uri": "spotify:artist:ar00000000000000000079"
+              }
+             ]
+            },
+            "coverArt": {
+             "sources": [
+              {
+               "height": 300,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 300
+              },
+              {
+               "height": 64,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 64
+              },
+              {
+               "height": 640,
+               "url": "https://i.scdn.co/image/fixture",
+               "width": 640
+              }
+             ]
+            },
+            "isPreRelease": false,
+            "name": "Album 10",
+            "playability": {
+             "playable": true,
+             "reason": "PLAYABLE"
+            },
+            "preReleaseEndDateTime": null,
+            "albumType": "ALBUM",
+            "uri": "spotify:album:al00000000000000000080"
+           }
+          },
+          "data": null,
+          "uri": "spotify:album:al00000000000000000080"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000081"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "More like Artist O",
+         "translatedBaseText": "More like Artist O"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "format-shows-shuffle",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 42",
+            "uri": "spotify:playlist:pl00000000000000000082"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000082"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000083"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Made for you",
+         "translatedBaseText": "Made for you"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "artistsets",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/1mZFVxRgAeVl9xKES2z0vp/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 43",
+            "uri": "spotify:playlist:pl00000000000000000084"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000084"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000085"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "More like Artist J",
+         "translatedBaseText": "More like Artist J"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 59
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 44",
+            "uri": "spotify:playlist:pl00000000000000000086"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000086"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000087"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Based on your recent listening",
+         "translatedBaseText": "Based on your recent listening"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 28
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 45",
+            "uri": "spotify:playlist:pl00000000000000000088"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000088"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000089"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "ArtistResponseWrapper",
+         "_uri": "spotify:artist:ar00000000000000000028",
+         "data": {
+          "__typename": "Artist",
+          "profile": {
+           "name": "Artist C"
+          },
+          "uri": "spotify:artist:ar00000000000000000028"
+         }
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "More like Artist C",
+         "translatedBaseText": "More like Artist C"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 125
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 46",
+            "uri": "spotify:playlist:pl00000000000000000031"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000031"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000090"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Based on your recent listening",
+         "translatedBaseText": "Based on your recent listening"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 73
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 47",
+            "uri": "spotify:playlist:pl00000000000000000091"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000091"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000092"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "Based on your recent listening",
+         "translatedBaseText": "Based on your recent listening"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 44
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 48",
+            "uri": "spotify:playlist:pl00000000000000000093"
+           }
+          },
+          "data": {
+           "__typename": "HomeRecsItemData"
+          },
+          "uri": "spotify:playlist:pl00000000000000000093"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000094"
+      },
+      {
+       "data": {
+        "__typename": "HomeFeedBaselineSectionData",
+        "headerEntity": {
+         "__typename": "UnknownType"
+        },
+        "iconName": "",
+        "title": {
+         "transformedLabel": "More like Artist O",
+         "translatedBaseText": "More like Artist O"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "content": {
+             "__typename": "PlaylistItemsPage",
+             "totalCount": 50
+            },
+            "description": "With <a href=spotify:artist:ar00000000000000000000>Artist P</a> and more",
+            "format": "editorial",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://i.scdn.co/image/fixture",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Playlist 49",
+            "uri": "spotify:playlist:pl00000000000000000095"
+           }
+          },
+          "data": null,
+          "uri": "spotify:playlist:pl00000000000000000095"
+         }
+        ],
+        "pagingInfo": {
+         "nextOffset": null
+        },
+        "totalCount": 1
+       },
+       "uri": "spotify:section:se00000000000000000096"
+      }
+     ],
+     "totalCount": 27
+    },
+    "uri": "spotify:page:0JQ5DAozXW0GUBAKjHsifJ"
+   }
+  }
+ },
+ "note": "Anonymised: playlist/album/artist names and descriptions replaced, owner/greeting/sp_t removed. Structure as recorded."
+}

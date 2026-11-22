@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.28.0
+- **Much faster.** Playlists, albums, Liked Songs, song radio, search, Home and the play-count / listener lookups now read Spotify's data directly, the way Spotify's own web player does, instead of scrolling and reading its pages: 990 Liked Songs in about 4 seconds instead of nearly a minute, a song radio in about 1 second instead of a page load and two clicks, a whole Sync in about 4 seconds. Long playlists load in full instead of stopping partway. If a direct read fails, the old page reading takes over, so nothing is lost when Spotify changes something.
+- **Artist and album images.** Spotify is now an image provider for artist photos and album covers (Settings → Providers). It is added after your existing providers, so by default it fills the gaps they leave.
+- **Spotify on the artist page.** A second source for **About** (Spotify's full biography) and **Similar Artists**, next to Last.fm's, plus three new tabs: **Spotify Stats** (monthly listeners, followers, world rank, top cities), **Spotify Photos** (the artist's banner and photos — also used by Now Playing's additional images) and **Concerts** (upcoming dates, hidden when there are none).
+- **Play counts in Top Songs and Track Popularity.** A second source for these two lists, next to Last.fm's: Spotify's all-time play counts. Move Spotify above Last.fm in Settings → Providers to use them for the popularity bars.
+- **Credits.** A new **Credits** tab on track pages: who wrote, produced and performed the song, and the label.
+- **Lyrics.** Spotify is now a lyrics source (Settings → Providers → Lyrics), after your files, LRCLIB and Lyrics.ovh by default. Lyrics come synced only when Spotify's version of the song has your copy's length; otherwise you get the words without timings, so a different cut never gets the wrong timing.
+- A page's Spotify sections share one lookup, and what Spotify said about an artist, album or track is remembered for a while, so opening an artist or track page opens the hidden Spotify window once, not once per section.
+- **Fix:** an album search could miss a compilation ("Various Artists"), whose card names its artist without a link.
+
+
 ## v1.27.5
 - **Fix: "Spotify is busy" for hours.** Before loading anything, the plugin waits until Spotify's page says whether you're signed in. If the page never said either way, that wait had no end: the hidden window stayed open and every playlist, Home card and refresh was refused with "Spotify is busy" until Viboplr restarted (or the plugin was turned off and on). The wait now gives up after 90 seconds while the window is hidden ("Spotify didn't finish loading — try again in a moment"); once the sign-in window is on screen it still waits for you.
 - The background warm-up of recently opened playlists after a refresh now runs quietly: it never pops up a sign-in window, and gives up after 25 seconds instead of holding the window.

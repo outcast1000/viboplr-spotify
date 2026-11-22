@@ -1,0 +1,110 @@
+{
+ "recorded": "2026-11-22 open.spotify.com (spotify-browse spike)",
+ "op": "getTrack",
+ "variables": {
+  "uri": "spotify:track:0DiWol3AO6WpXZgp0goxAV",
+  "includeVideoAssociationItems": true,
+  "includeMusicVideoPreviews": false
+ },
+ "data": {
+  "trackUnion": {
+   "__typename": "Track",
+   "duration": {
+    "totalMilliseconds": 320357
+   },
+   "id": "0DiWol3AO6WpXZgp0goxAV",
+   "mediaType": "AUDIO",
+   "name": "One More Time",
+   "playability": {
+    "playable": true,
+    "reason": "PLAYABLE"
+   },
+   "playcount": "1008254944",
+   "saved": false,
+   "trackNumber": 1,
+   "uri": "spotify:track:0DiWol3AO6WpXZgp0goxAV",
+   "albumOfTrack": {
+    "copyright": {
+     "items": [
+      {
+       "text": "© 2001 Daft Life Limited",
+       "type": "C"
+      },
+      {
+       "text": "℗ 2001 Daft Life Limited",
+       "type": "P"
+      }
+     ],
+     "totalCount": 2
+    },
+    "courtesyLine": "",
+    "id": "2noRn2Aes5aoNVsU6iWThc",
+    "date": {
+     "isoString": "2001-03-12T00:00:00Z",
+     "precision": "DAY",
+     "year": 2001
+    },
+    "name": "Discovery",
+    "playability": {
+     "playable": true
+    },
+    "tracks": {
+     "items": [
+      {
+       "track": {
+        "trackNumber": 1,
+        "uri": "spotify:track:0DiWol3AO6WpXZgp0goxAV"
+       }
+      },
+      {
+       "track": {
+        "trackNumber": 2,
+        "uri": "spotify:track:3H3cOQ6LBLSvmcaV7QkZEu"
+       }
+      },
+      {
+       "track": {
+        "trackNumber": 3,
+        "uri": "spotify:track:2VEZx7NWsZ1D0eJ4uv5Fym"
+       }
+      },
+      {
+       "track": {
+        "trackNumber": 4,
+        "uri": "spotify:track:5W3cjX2J3tjhG8zb6u0qHn"
+       }
+      },
+      {
+       "track": {
+        "trackNumber": 5,
+        "uri": "spotify:track:6vuPZX9fWESg5js2JFTQRJ"
+       }
+      }
+     ],
+     "totalCount": 14
+    },
+    "type": "ALBUM",
+    "uri": "spotify:album:2noRn2Aes5aoNVsU6iWThc",
+    "coverArt": {
+     "sources": [
+      {
+       "height": 300,
+       "url": "https://i.scdn.co/image/ab67616d00001e021e81bff9807a9e629fce5ade",
+       "width": 300
+      },
+      {
+       "height": 64,
+       "url": "https://i.scdn.co/image/ab67616d000048511e81bff9807a9e629fce5ade",
+       "width": 64
+      },
+      {
+       "height": 640,
+       "url": "https://i.scdn.co/image/ab67616d0000b2731e81bff9807a9e629fce5ade",
+       "width": 640
+      }
+     ]
+    }
+   }
+  }
+ }
+}

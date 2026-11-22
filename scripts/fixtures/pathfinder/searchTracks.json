@@ -1,0 +1,353 @@
+{
+ "recorded": "2026-11-22 open.spotify.com (spotify-browse spike)",
+ "op": "searchTracks",
+ "variables": {
+  "includePreReleases": false,
+  "includeAlbumPreReleases": false,
+  "numberOfTopResults": 20,
+  "searchTerm": "one more time daft punk",
+  "offset": 0,
+  "limit": 20,
+  "includeAudiobooks": true,
+  "includeAuthors": true,
+  "includeEpisodeContentRatingsV2": true
+ },
+ "data": {
+  "searchV2": {
+   "query": "one more time daft punk",
+   "tracksV2": {
+    "items": [
+     {
+      "item": {
+       "__typename": "TrackResponseWrapper",
+       "data": {
+        "__typename": "Track",
+        "albumOfTrack": {
+         "coverArt": {
+          "sources": [
+           {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e021e81bff9807a9e629fce5ade",
+            "width": 300
+           },
+           {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d000048511e81bff9807a9e629fce5ade",
+            "width": 64
+           },
+           {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b2731e81bff9807a9e629fce5ade",
+            "width": 640
+           }
+          ]
+         },
+         "id": "2noRn2Aes5aoNVsU6iWThc",
+         "name": "Discovery",
+         "uri": "spotify:album:2noRn2Aes5aoNVsU6iWThc"
+        },
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Daft Punk"
+           },
+           "uri": "spotify:artist:4tZwfgrHOc3mvqYlEYSvVi"
+          }
+         ]
+        },
+        "duration": {
+         "totalMilliseconds": 320357
+        },
+        "id": "0DiWol3AO6WpXZgp0goxAV",
+        "trackMediaType": "AUDIO",
+        "name": "One More Time",
+        "playability": {
+         "playable": true,
+         "reason": "PLAYABLE"
+        },
+        "uri": "spotify:track:0DiWol3AO6WpXZgp0goxAV"
+       }
+      },
+      "matchedFields": []
+     },
+     {
+      "item": {
+       "__typename": "TrackResponseWrapper",
+       "data": {
+        "__typename": "Track",
+        "albumOfTrack": {
+         "coverArt": {
+          "sources": [
+           {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e0254a277d652eba4cd35a2e78a",
+            "width": 300
+           },
+           {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d0000485154a277d652eba4cd35a2e78a",
+            "width": 64
+           },
+           {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b27354a277d652eba4cd35a2e78a",
+            "width": 640
+           }
+          ]
+         },
+         "id": "4a0p1M12f7VaZWdoNSdEK4",
+         "name": "Musique, Vol. 1",
+         "uri": "spotify:album:4a0p1M12f7VaZWdoNSdEK4"
+        },
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Daft Punk"
+           },
+           "uri": "spotify:artist:4tZwfgrHOc3mvqYlEYSvVi"
+          }
+         ]
+        },
+        "duration": {
+         "totalMilliseconds": 235466
+        },
+        "id": "0ijhkvBpA7OBlY4clWSUZw",
+        "trackMediaType": "AUDIO",
+        "name": "One More Time - Radio Edit",
+        "playability": {
+         "playable": true,
+         "reason": "PLAYABLE"
+        },
+        "uri": "spotify:track:0ijhkvBpA7OBlY4clWSUZw"
+       }
+      },
+      "matchedFields": []
+     },
+     {
+      "item": {
+       "__typename": "TrackResponseWrapper",
+       "data": {
+        "__typename": "Track",
+        "albumOfTrack": {
+         "coverArt": {
+          "sources": [
+           {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e02673288fb985e5c194536ae27",
+            "width": 300
+           },
+           {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d00004851673288fb985e5c194536ae27",
+            "width": 64
+           },
+           {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b273673288fb985e5c194536ae27",
+            "width": 640
+           }
+          ]
+         },
+         "id": "7u6zL7kqpgLPISZYXNTgYk",
+         "name": "Alive 2007",
+         "uri": "spotify:album:7u6zL7kqpgLPISZYXNTgYk"
+        },
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Daft Punk"
+           },
+           "uri": "spotify:artist:4tZwfgrHOc3mvqYlEYSvVi"
+          }
+         ]
+        },
+        "duration": {
+         "totalMilliseconds": 370533
+        },
+        "id": "1H1d4dr7Hk5Rrd8Tb5y5yr",
+        "trackMediaType": "AUDIO",
+        "name": "One More Time / Aerodynamic",
+        "playability": {
+         "playable": true,
+         "reason": "PLAYABLE"
+        },
+        "uri": "spotify:track:1H1d4dr7Hk5Rrd8Tb5y5yr"
+       }
+      },
+      "matchedFields": []
+     },
+     {
+      "item": {
+       "__typename": "TrackResponseWrapper",
+       "data": {
+        "__typename": "Track",
+        "albumOfTrack": {
+         "coverArt": {
+          "sources": [
+           {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e0238e5c88261ac859cee792916",
+            "width": 300
+           },
+           {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d0000485138e5c88261ac859cee792916",
+            "width": 64
+           },
+           {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b27338e5c88261ac859cee792916",
+            "width": 640
+           }
+          ]
+         },
+         "id": "0bHuuhpKn42ktYbyTIeumE",
+         "name": "One More Time",
+         "uri": "spotify:album:0bHuuhpKn42ktYbyTIeumE"
+        },
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Daft Punk"
+           },
+           "uri": "spotify:artist:4tZwfgrHOc3mvqYlEYSvVi"
+          }
+         ]
+        },
+        "duration": {
+         "totalMilliseconds": 235466
+        },
+        "id": "2Uy6EhQXAYkXA6MohPgjpV",
+        "trackMediaType": "AUDIO",
+        "name": "One More Time - Radio Edit",
+        "playability": {
+         "playable": true,
+         "reason": "PLAYABLE"
+        },
+        "uri": "spotify:track:2Uy6EhQXAYkXA6MohPgjpV"
+       }
+      },
+      "matchedFields": []
+     },
+     {
+      "item": {
+       "__typename": "TrackResponseWrapper",
+       "data": {
+        "__typename": "Track",
+        "albumOfTrack": {
+         "coverArt": {
+          "sources": [
+           {
+            "height": 720,
+            "url": "https://i.scdn.co/image/ab6742d3000053b7eb2a4061ce0dc5b06bbd3003",
+            "width": 1280
+           },
+           {
+            "height": 360,
+            "url": "https://i.scdn.co/image/ab6742d3000052b7eb2a4061ce0dc5b06bbd3003",
+            "width": 640
+           },
+           {
+            "height": 720,
+            "url": "https://i.scdn.co/image/ab6742d3000053b7eb2a4061ce0dc5b06bbd3003",
+            "width": 1280
+           }
+          ]
+         },
+         "id": "5s9ERhae1xNw3pCYxFom7O",
+         "name": "One More Time",
+         "uri": "spotify:album:5s9ERhae1xNw3pCYxFom7O"
+        },
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Daft Punk"
+           },
+           "uri": "spotify:artist:4tZwfgrHOc3mvqYlEYSvVi"
+          }
+         ]
+        },
+        "duration": {
+         "totalMilliseconds": 323008
+        },
+        "id": "2sQ5gXpPyhBkwpComFBOjl",
+        "trackMediaType": "VIDEO",
+        "name": "One More Time",
+        "playability": {
+         "playable": true,
+         "reason": "PLAYABLE"
+        },
+        "uri": "spotify:track:2sQ5gXpPyhBkwpComFBOjl"
+       }
+      },
+      "matchedFields": []
+     },
+     {
+      "item": {
+       "__typename": "TrackResponseWrapper",
+       "data": {
+        "__typename": "Track",
+        "albumOfTrack": {
+         "coverArt": {
+          "sources": [
+           {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e0238e5c88261ac859cee792916",
+            "width": 300
+           },
+           {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d0000485138e5c88261ac859cee792916",
+            "width": 64
+           },
+           {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b27338e5c88261ac859cee792916",
+            "width": 640
+           }
+          ]
+         },
+         "id": "0bHuuhpKn42ktYbyTIeumE",
+         "name": "One More Time",
+         "uri": "spotify:album:0bHuuhpKn42ktYbyTIeumE"
+        },
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Daft Punk"
+           },
+           "uri": "spotify:artist:4tZwfgrHOc3mvqYlEYSvVi"
+          }
+         ]
+        },
+        "duration": {
+         "totalMilliseconds": 480040
+        },
+        "id": "5P0cYWH6mpkdrmsgo5e1fe",
+        "trackMediaType": "AUDIO",
+        "name": "One More Time - 12 Mix",
+        "playability": {
+         "playable": true,
+         "reason": "PLAYABLE"
+        },
+        "uri": "spotify:track:5P0cYWH6mpkdrmsgo5e1fe"
+       }
+      },
+      "matchedFields": []
+     }
+    ],
+    "pagingInfo": {
+     "limit": 20,
+     "nextOffset": 20
+    },
+    "totalCount": 1000
+   }
+  }
+ }
+}

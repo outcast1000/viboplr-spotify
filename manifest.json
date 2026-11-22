@@ -1,7 +1,7 @@
 {
   "id": "spotify-browse",
   "name": "Spotify",
-  "version": "1.27.5",
+  "version": "1.28.0",
   "author": "Viboplr",
   "description": "Browse your Spotify Music home — playlists grouped by shelf — search Spotify for songs, play full albums, and see Spotify play counts and monthly listeners",
   "icon": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8.5 16c2.5-1 5.5-1 7.5 0M7 13c3-1.5 7.5-1.5 10.5 0M5.5 10c4-2 9.5-2 13.5 0",
@@ -147,13 +147,89 @@
         "ttl": 604800
       },
       {
+        "id": "spotify_track_credits",
+        "name": "Credits",
+        "description": "Who wrote, produced and performed the track, from Spotify",
+        "entity": "track",
+        "displayKind": "key_value",
+        "ttl": 2592000
+      },
+      {
+        "id": "lyrics",
+        "name": "Lyrics",
+        "description": "Song lyrics from Spotify (Musixmatch), synced when Spotify's version has your copy's length",
+        "entity": "track",
+        "displayKind": "lyrics",
+        "ttl": 7776000
+      },
+      {
         "id": "spotify_artist_listeners",
         "name": "Spotify Listeners",
         "description": "Monthly listeners on Spotify",
         "entity": "artist",
         "displayKind": "title_line",
         "ttl": 604800
+      },
+      {
+        "id": "artist_top_tracks",
+        "name": "Top Songs",
+        "description": "The artist's most played songs on Spotify, with all-time play counts",
+        "entity": "artist",
+        "displayKind": "ranked_list",
+        "ttl": 604800
+      },
+      {
+        "id": "album_track_popularity",
+        "name": "Track Popularity",
+        "description": "Spotify play counts for every track of the album",
+        "entity": "album",
+        "displayKind": "ranked_list",
+        "ttl": 604800
+      },
+      {
+        "id": "artist_bio",
+        "name": "About",
+        "description": "The artist's biography from Spotify",
+        "entity": "artist",
+        "displayKind": "rich_text",
+        "ttl": 7776000
+      },
+      {
+        "id": "similar_artists",
+        "name": "Similar Artists",
+        "description": "Spotify's \"Fans also like\" artists",
+        "entity": "artist",
+        "displayKind": "entity_cards",
+        "ttl": 7776000
+      },
+      {
+        "id": "spotify_artist_stats",
+        "name": "Spotify Stats",
+        "description": "Monthly listeners, followers, world rank and top cities on Spotify",
+        "entity": "artist",
+        "displayKind": "stat_grid",
+        "ttl": 604800
+      },
+      {
+        "id": "spotify_artist_photos",
+        "name": "Spotify Photos",
+        "description": "The artist's banner and photos on Spotify",
+        "entity": "artist",
+        "displayKind": "image_gallery",
+        "ttl": 2592000
+      },
+      {
+        "id": "spotify_concerts",
+        "name": "Concerts",
+        "description": "Upcoming concerts listed on Spotify",
+        "entity": "artist",
+        "displayKind": "entity_list",
+        "ttl": 86400
       }
+    ],
+    "imageProviders": [
+      { "entity": "artist" },
+      { "entity": "album" }
     ],
     "sidebarItems": [
       {

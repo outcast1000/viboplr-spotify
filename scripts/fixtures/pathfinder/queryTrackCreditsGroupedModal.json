@@ -1,0 +1,153 @@
+{
+ "recorded": "2026-11-22 open.spotify.com (spotify-browse, scriptPathfinder) — Karma Police",
+ "op": "queryTrackCreditsGroupedModal",
+ "variables": {
+  "trackUri": "spotify:track:63OQupATfueTdZMWTxW03A"
+ },
+ "data": {
+  "trackUnion": {
+   "__typename": "Track",
+   "artists": {
+    "items": [
+     {
+      "uri": "spotify:artist:4Z8W4fKeB5YxbusRsdQVPb"
+     }
+    ]
+   },
+   "creditsTrait": {
+    "contributors": {
+     "items": [
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Radiohead",
+       "role": "Main Artist",
+       "roleGroup": {
+        "name": "Artist"
+       },
+       "uri": "spotify:artist:4Z8W4fKeB5YxbusRsdQVPb",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Colin Greenwood",
+       "role": "Composer",
+       "roleGroup": {
+        "name": "Composition & Lyrics"
+       },
+       "uri": "spotify:artist:6bdotkIeFswBydfQqzHnKS",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Ed O'Brien",
+       "role": "Composer",
+       "roleGroup": {
+        "name": "Composition & Lyrics"
+       },
+       "uri": "spotify:artist:3E7aH1Yv84NoaP9JWcrMpE",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Jonny Greenwood",
+       "role": "Composer",
+       "roleGroup": {
+        "name": "Composition & Lyrics"
+       },
+       "uri": "spotify:artist:0z9s3P5vCzKcUBSxgBDyLU",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Philip Selway",
+       "role": "Composer",
+       "roleGroup": {
+        "name": "Composition & Lyrics"
+       },
+       "uri": "spotify:artist:2A59wav3PGiJij2rK7HQYH",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Thom Yorke",
+       "role": "Composer",
+       "roleGroup": {
+        "name": "Composition & Lyrics"
+       },
+       "uri": "spotify:artist:4CvTDPKA6W06DRfBnZKrau",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Thom Yorke",
+       "role": "Lyricist",
+       "roleGroup": {
+        "name": "Composition & Lyrics"
+       },
+       "uri": "spotify:artist:4CvTDPKA6W06DRfBnZKrau",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Colin Greenwood",
+       "role": "Producer",
+       "roleGroup": {
+        "name": "Production & Engineering"
+       },
+       "uri": "spotify:artist:6bdotkIeFswBydfQqzHnKS",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Ed O'Brien",
+       "role": "Producer",
+       "roleGroup": {
+        "name": "Production & Engineering"
+       },
+       "uri": "spotify:artist:3E7aH1Yv84NoaP9JWcrMpE",
+       "url": null
+      },
+      {
+       "aiAttribution": {
+        "hasAiAttribution": false
+       },
+       "name": "Jonny Greenwood",
+       "role": "Producer",
+       "roleGroup": {
+        "name": "Production & Engineering"
+       },
+       "uri": "spotify:artist:0z9s3P5vCzKcUBSxgBDyLU",
+       "url": null
+      }
+     ]
+    },
+    "sources": {
+     "items": [
+      {
+       "name": "XL Recordings"
+      }
+     ]
+    }
+   },
+   "name": "Karma Police"
+  }
+ }
+}

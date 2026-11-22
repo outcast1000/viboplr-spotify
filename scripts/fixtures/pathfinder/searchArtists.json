@@ -1,0 +1,122 @@
+{
+ "recorded": "2026-11-22 open.spotify.com (spotify-browse spike)",
+ "op": "searchArtists",
+ "variables": {
+  "includePreReleases": false,
+  "includeAlbumPreReleases": false,
+  "numberOfTopResults": 20,
+  "searchTerm": "radiohead",
+  "offset": 0,
+  "limit": 30,
+  "includeAudiobooks": true,
+  "includeAuthors": true,
+  "includeEpisodeContentRatingsV2": true
+ },
+ "data": {
+  "searchV2": {
+   "artists": {
+    "items": [
+     {
+      "__typename": "ArtistResponseWrapper",
+      "data": {
+       "__typename": "Artist",
+       "profile": {
+        "name": "Radiohead"
+       },
+       "uri": "spotify:artist:4Z8W4fKeB5YxbusRsdQVPb",
+       "visuals": {
+        "avatarImage": {
+         "sources": [
+          {
+           "height": 640,
+           "url": "https://i.scdn.co/image/ab6761610000e5eb959527d2fabc9c64287e57b9",
+           "width": 640
+          },
+          {
+           "height": 160,
+           "url": "https://i.scdn.co/image/ab6761610000f178959527d2fabc9c64287e57b9",
+           "width": 160
+          },
+          {
+           "height": 320,
+           "url": "https://i.scdn.co/image/ab67616100005174959527d2fabc9c64287e57b9",
+           "width": 320
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "__typename": "ArtistResponseWrapper",
+      "data": {
+       "__typename": "Artist",
+       "profile": {
+        "name": "Deftones"
+       },
+       "uri": "spotify:artist:6Ghvu1VvMGScGpOUJBAHNH",
+       "visuals": {
+        "avatarImage": {
+         "sources": [
+          {
+           "height": 640,
+           "url": "https://i.scdn.co/image/ab6761610000e5ebe3ac5eb948e78d9285d1dbdb",
+           "width": 640
+          },
+          {
+           "height": 160,
+           "url": "https://i.scdn.co/image/ab6761610000f178e3ac5eb948e78d9285d1dbdb",
+           "width": 160
+          },
+          {
+           "height": 320,
+           "url": "https://i.scdn.co/image/ab67616100005174e3ac5eb948e78d9285d1dbdb",
+           "width": 320
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "__typename": "ArtistResponseWrapper",
+      "data": {
+       "__typename": "Artist",
+       "profile": {
+        "name": "The Cure"
+       },
+       "uri": "spotify:artist:7bu3H8JO7d0UbMoVzbo70s",
+       "visuals": {
+        "avatarImage": {
+         "sources": [
+          {
+           "height": 640,
+           "url": "https://i.scdn.co/image/ab6761610000e5ebdd427c765c409ec02dc3a868",
+           "width": 640
+          },
+          {
+           "height": 160,
+           "url": "https://i.scdn.co/image/ab6761610000f178dd427c765c409ec02dc3a868",
+           "width": 160
+          },
+          {
+           "height": 320,
+           "url": "https://i.scdn.co/image/ab67616100005174dd427c765c409ec02dc3a868",
+           "width": 320
+          }
+         ]
+        }
+       }
+      }
+     }
+    ],
+    "pagingInfo": {
+     "limit": 30,
+     "nextOffset": 30
+    },
+    "totalCount": 131
+   },
+   "query": "radiohead"
+  }
+ }
+}

@@ -2400,6 +2400,990 @@ function activate(api) {
     '}})()';
   }
 
+  // ---- Direct reads (Pathfinder) ----
+  //
+  // Reads Spotify data the way the web player itself does — its GraphQL
+  // endpoint (api-partner.spotify.com/pathfinder/v2/query, persisted queries)
+  // and a few spclient routes — instead of rendering pages and parsing them.
+  // Measured 2026-11-22: 990 Liked Songs in 10 pages / 3.1s, a 50-track
+  // playlist in one 0.6s call, a song radio in ~1s; the scrapes take tens of
+  // seconds. The map of these endpoints is SpotAPI (README.md "Spotify's
+  // private web-player API") — a reference, never a source to copy.
+  //
+  // How it works, all inside the signed-in browse window:
+  //   - The page's own requests carry its session headers (authorization,
+  //     client-token, spotify-app-version). A fetch wrapper (SCRIPT_CAPTURE)
+  //     copies them, plus each persisted query's hash and variables. The
+  //     plugin evals it as soon as the window opens and after each navigation,
+  //     so it usually sees the page's first requests. When it has seen none,
+  //     the reader nudges the page with an in-app navigation (pushState +
+  //     popstate: no reload, the wrapper survives) to make it call Pathfinder.
+  //   - A hash the page hasn't sent comes from the web player's own JS chunks
+  //     (`"<name>","query","<sha256>"`), which the page already has cached.
+  //   - Every caller keeps its page scrape as the fallback (owner decision,
+  //     2026-11-22): a direct read that fails, comes back empty or goes quiet
+  //     hands over to it.
+  //
+  // Undocumented endpoints: names, hashes and response shapes can change with
+  // any web-player release. Every field read is guarded, and a response that
+  // doesn't have the expected shape fails over to the scrape.
+  var DIRECT_MAX_ITEMS = 10000;
+  // Liked Songs: a safety stop only (1,000 pages); a read that reaches it
+  // reports `truncated` rather than passing for the whole library.
+  var DIRECT_MAX_LIKED = 100000;
+
+  // -- Pure helpers: used by the host AND inside the page (DIRECT_PRELUDE
+  // -- re-declares them there), and pinned by scripts/direct.test.mjs.
+
+  // The widest image of a Spotify `sources` list.
+  function largestImage(sources) {
+    if (!sources || !sources.length) return null;
+    var best = null;
+    for (var i = 0; i < sources.length; i++) {
+      var s = sources[i];
+      if (s && s.url && (!best || (s.width || 0) > (best.width || 0))) best = s;
+    }
+    return best ? best.url : null;
+  }
+
+  // 320357 → "5:20" (the row scraper's m:ss; an hour-long track is "75:03",
+  // which parseDuration reads correctly).
+  function formatMs(ms) {
+    if (typeof ms !== "number" || !(ms > 0)) return "";
+    var secs = Math.round(ms / 1000);
+    var s = secs % 60;
+    return Math.floor(secs / 60) + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  // Spotify descriptions are HTML ("<a href=spotify:playlist:…>Reggae</a> and
+  // more"). Tags out, the common entities decoded, whitespace collapsed.
+  function htmlToText(html, max) {
+    if (!html) return "";
+    return String(html)
+      .replace(/<[^>]*>/g, "")
+      .replace(/&quot;/g, "\"").replace(/&#x27;|&#39;|&apos;/g, "'")
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
+      .replace(/&#(\d+);/g, function (_, n) { return String.fromCharCode(parseInt(n, 10)); })
+      .replace(/&amp;/g, "&")
+      .replace(/\s+/g, " ")
+      .trim()
+      .substring(0, max || 500);
+  }
+
+  function artistNames(artists) {
+    var out = [];
+    var items = (artists && artists.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      var nm = items[i] && items[i].profile && items[i].profile.name;
+      if (nm && out.indexOf(nm) === -1) out.push(nm);
+    }
+    return out;
+  }
+
+  // A Pathfinder Track (playlist item, album track, library track, search hit)
+  // → the row shape the scraper produces: { name, artist, album, duration,
+  // imageUrl, spotifyId }. Album tracks carry no albumOfTrack (the album is the
+  // page's), so its name and cover are passed in. Null when there's no name.
+  function mapTrackRow(d, uri, albumName, albumCover) {
+    if (!d || !d.name) return null;
+    var u = d.uri || uri || "";
+    var al = d.albumOfTrack;
+    var ms = (d.trackDuration && d.trackDuration.totalMilliseconds) || (d.duration && d.duration.totalMilliseconds);
+    return {
+      name: d.name,
+      artist: artistNames(d.artists).join(", "),
+      album: (al && al.name) || albumName || "",
+      duration: formatMs(ms),
+      imageUrl: largestImage(al && al.coverArt && al.coverArt.sources) || albumCover || null,
+      spotifyId: u.indexOf("spotify:track:") === 0 ? u.substring(14) : null,
+    };
+  }
+
+  function idFromUri(uri, kind) {
+    var p = "spotify:" + kind + ":";
+    return typeof uri === "string" && uri.indexOf(p) === 0 ? uri.substring(p.length) : null;
+  }
+
+  // -- Search --
+
+  var SEARCH_OPS = { tracks: "searchTracks", albums: "searchAlbums", artists: "searchArtists" };
+
+  // The web player's own variables for a search page (seen 2026-11-22), minus
+  // the podcast/audiobook extras.
+  function searchVars(term, limit) {
+    return {
+      searchTerm: term, offset: 0, limit: limit || 20, numberOfTopResults: 20,
+      includeAudiobooks: false, includeAuthors: false, includePreReleases: false,
+      includeAlbumPreReleases: false, includeEpisodeContentRatingsV2: false,
+    };
+  }
+
+  // A search response → { candidates, total } in scriptSearchCandidates'
+  // shape, so the pickers (pickTrackCandidate …) work on either source:
+  //   track  { kind, id, title, artists[], albumId, albumName, durationMs }
+  //   album  { kind, id, title, artists[], imageUrl }
+  //   artist { kind, id, title, imageUrl }
+  // imageUrl (the widest cover / artist photo, null when Spotify has none) is
+  // what the image providers answer with; the page candidates have none.
+  // Null when the response isn't a search result for that facet.
+  function candidatesFromSearch(facet, data) {
+    var sv = data && data.searchV2;
+    var list = sv && (facet === "tracks" ? sv.tracksV2 : facet === "albums" ? sv.albumsV2 : facet === "artists" ? sv.artists : null);
+    if (!list || !list.items) return null;
+    var out = [];
+    for (var i = 0; i < list.items.length; i++) {
+      var it = list.items[i];
+      var d = facet === "tracks" ? it && it.item && it.item.data : it && it.data;
+      if (!d) continue;
+      if (facet === "tracks") {
+        var tid = idFromUri(d.uri, "track");
+        if (!tid || !d.name) continue;
+        var al = d.albumOfTrack || {};
+        out.push({ kind: "track", id: tid, title: d.name, artists: artistNames(d.artists),
+          albumId: idFromUri(al.uri, "album") || al.id || null, albumName: al.name || "",
+          durationMs: (d.duration && d.duration.totalMilliseconds) || null });
+      } else if (facet === "albums") {
+        var aid = idFromUri(d.uri, "album");
+        if (aid && d.name) out.push({ kind: "album", id: aid, title: d.name, artists: artistNames(d.artists),
+          imageUrl: largestImage(d.coverArt && d.coverArt.sources) });
+      } else {
+        var rid = idFromUri(d.uri, "artist");
+        var nm = d.profile && d.profile.name;
+        if (rid && nm) out.push({ kind: "artist", id: rid, title: nm,
+          imageUrl: largestImage(d.visuals && d.visuals.avatarImage && d.visuals.avatarImage.sources) });
+      }
+    }
+    return { candidates: out, total: typeof list.totalCount === "number" ? list.totalCount : out.length };
+  }
+
+  // A searchTracks response → track rows (mapTrackRow), duplicates collapsed.
+  function tracksFromSearch(data) {
+    var list = data && data.searchV2 && data.searchV2.tracksV2;
+    if (!list || !list.items) return null;
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < list.items.length; i++) {
+      var d = list.items[i] && list.items[i].item && list.items[i].item.data;
+      var row = d && d.__typename === "Track" ? mapTrackRow(d, null, null, null) : null;
+      if (!row) continue;
+      var key = row.spotifyId || row.name;
+      if (seen[key]) continue;
+      seen[key] = 1;
+      out.push(row);
+    }
+    return out;
+  }
+
+  // -- Counts --
+
+  // getTrack → plays (the number the track page prints). Null when Spotify has
+  // none (it hides counts under ~1,000 plays) or the shape is unexpected.
+  function playsFromTrack(data) {
+    var t = data && data.trackUnion;
+    var raw = t && t.playcount;
+    if (raw == null || raw === "") return null;
+    var n = parseInt(String(raw), 10);
+    return isFinite(n) && n > 0 ? n : null;
+  }
+
+  // queryArtistOverview → monthly listeners (exact, not the "46.8M" label).
+  function listenersFromOverview(data) {
+    var a = data && data.artistUnion;
+    var n = a && a.stats && a.stats.monthlyListeners;
+    return typeof n === "number" && n > 0 ? n : null;
+  }
+
+  // -- Ranked lists (Top Songs, Track Popularity) --
+
+  // One Pathfinder track → a ranked_list item in the shape Last.fm's Top Songs
+  // / Track Popularity use: { name, value (Spotify plays), libraryKind }.
+  // `subtitle` carries the credit only when it isn't just `mainArtist` (a
+  // feature, a split single) — the pages read it as the row's artist, and
+  // without it they use the page's own artist.
+  // A track whose count Spotify hides (under ~1,000 plays) keeps its row with
+  // value 0 — the row IS needed (on an album you don't own this list is the
+  // tracklist), and 0 is the host's "no count" (useEntityDetail: popularity
+  // bars only for value > 0, rankedValues "0 when it reported none").
+  function rankedTrackItem(t, mainArtist) {
+    if (!t || !t.name) return null;
+    var n = parseInt(String(t.playcount == null ? "" : t.playcount), 10);
+    var item = { name: t.name, value: isFinite(n) && n > 0 ? n : 0, libraryKind: "track" };
+    var credit = artistNames(t.artists);
+    var onlyMain = credit.length === 1 && mainArtist && normalizeName(credit[0]) === normalizeName(mainArtist);
+    if (credit.length && !onlyMain) item.subtitle = credit.join(", ");
+    return item;
+  }
+
+  // queryArtistOverview → the artist's Top Songs, in Spotify's order (10).
+  function topTracksFromOverview(data, artistName) {
+    var a = data && data.artistUnion;
+    var items = a && a.discography && a.discography.topTracks && a.discography.topTracks.items;
+    if (!items) return null;
+    var out = [];
+    for (var i = 0; i < items.length; i++) {
+      var row = rankedTrackItem(items[i] && items[i].track, artistName);
+      if (row) out.push(row);
+    }
+    return out;
+  }
+
+  // getAlbum → { name, items (album order, one page), total } — the album
+  // pages read the list in album order (it is the tracklist of an album you
+  // don't own) and its values as the popularity bars.
+  function albumTracksFromAlbum(data, artistName) {
+    var au = data && data.albumUnion;
+    if (!au || !au.tracksV2 || !au.tracksV2.items) return null;
+    var out = [];
+    var items = au.tracksV2.items;
+    for (var i = 0; i < items.length; i++) {
+      var row = rankedTrackItem(items[i] && items[i].track, artistName);
+      if (row) out.push(row);
+    }
+    return { name: au.name || "", items: out, total: typeof au.tracksV2.totalCount === "number" ? au.tracksV2.totalCount : out.length };
+  }
+
+  // -- The artist page (one queryArtistOverview) --
+
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  // "2027-06-08T19:00+09:00" → "Tue 8 Jun 2027": the date as the venue states
+  // it (its own calendar day, whatever the user's time zone).
+  function concertDate(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+    if (!m) return "";
+    var y = +m[1], mo = +m[2], d = +m[3];
+    var wd = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+    return WEEKDAYS[wd] + " " + d + " " + MONTHS[mo - 1] + " " + y;
+  }
+
+  function escapeText(t) {
+    return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Everything an artist page's Spotify sections show, from one read:
+  //   { listeners, followers, worldRank, topCities: [{ city, country, listeners }],
+  //     topTracks (rankedTrackItem rows), bio: [paragraphs] | null,
+  //     related: [names], photos: [{ url, width, height, caption }],
+  //     concerts: [{ id, date, city, venue, title, festival }] }
+  // Every part is optional in the response; a missing one is empty / null.
+  function artistFactsFromOverview(data, artistName) {
+    var a = data && data.artistUnion;
+    if (!a) return null;
+    var st = a.stats || {};
+    var cities = [];
+    var ci = (st.topCities && st.topCities.items) || [];
+    for (var i = 0; i < ci.length; i++) {
+      if (ci[i] && ci[i].city) cities.push({ city: ci[i].city, country: ci[i].country || "", listeners: ci[i].numberOfListeners || 0 });
+    }
+    var bio = null;
+    var raw = a.profile && a.profile.biography && a.profile.biography.text;
+    if (raw) {
+      var paras = String(raw).split(/\n+/);
+      bio = [];
+      for (var b = 0; b < paras.length; b++) {
+        var t = htmlToText(paras[b], 4000);
+        if (t) bio.push(t);
+      }
+      if (!bio.length) bio = null;
+    }
+    var related = [];
+    var ra = (a.relatedContent && a.relatedContent.relatedArtists && a.relatedContent.relatedArtists.items) || [];
+    for (var r = 0; r < ra.length; r++) {
+      var rn = ra[r] && ra[r].profile && ra[r].profile.name;
+      if (rn && related.indexOf(rn) === -1) related.push(rn);
+    }
+    var photos = [];
+    var seen = {};
+    function addPhoto(url, w, h, caption) {
+      if (!url || seen[url]) return;
+      seen[url] = 1;
+      photos.push({ url: url, width: w || undefined, height: h || undefined, caption: caption });
+    }
+    // The page's wide banner first (its sources give maxWidth / maxHeight).
+    var hs = (a.headerImage && a.headerImage.data && a.headerImage.data.sources) || [];
+    var hbest = null;
+    for (var x = 0; x < hs.length; x++) if (hs[x] && hs[x].url && (!hbest || (hs[x].maxWidth || 0) > (hbest.maxWidth || 0))) hbest = hs[x];
+    if (hbest) addPhoto(hbest.url, hbest.maxWidth, hbest.maxHeight, "Banner");
+    var av = a.visuals && a.visuals.avatarImage && a.visuals.avatarImage.sources;
+    var avBest = null;
+    for (var y = 0; av && y < av.length; y++) if (av[y] && av[y].url && (!avBest || (av[y].width || 0) > (avBest.width || 0))) avBest = av[y];
+    if (avBest) addPhoto(avBest.url, avBest.width, avBest.height, "Profile picture");
+    var gal = (a.visuals && a.visuals.gallery && a.visuals.gallery.items) || [];
+    for (var g = 0; g < gal.length; g++) {
+      var gs = gal[g] && gal[g].sources;
+      var gb = null;
+      for (var z = 0; gs && z < gs.length; z++) if (gs[z] && gs[z].url && (!gb || (gs[z].width || 0) > (gb.width || 0))) gb = gs[z];
+      if (gb) addPhoto(gb.url, gb.width, gb.height, "Gallery");
+    }
+    var concerts = [];
+    var co = (a.goods && a.goods.concerts && a.goods.concerts.items) || [];
+    for (var c = 0; c < co.length; c++) {
+      var cd = co[c] && co[c].data;
+      if (!cd || !cd.uri) continue;
+      concerts.push({
+        id: idFromUri(cd.uri, "concert"),
+        date: concertDate(cd.startDateIsoString),
+        city: (cd.location && cd.location.city) || "",
+        venue: (cd.location && cd.location.name) || "",
+        title: cd.title || "",
+        festival: !!cd.festival,
+      });
+    }
+    return {
+      listeners: listenersFromOverview(data),
+      followers: typeof st.followers === "number" ? st.followers : null,
+      worldRank: typeof st.worldRank === "number" && st.worldRank > 0 ? st.worldRank : null,
+      topCities: cities,
+      topTracks: topTracksFromOverview(data, artistName) || [],
+      bio: bio,
+      related: related,
+      photos: photos,
+      concerts: concerts,
+    };
+  }
+
+  // The section values each type shows (null = nothing to show: not_found).
+
+  // rich_text — the About tab renders `summary` as (sanitized) HTML, so the
+  // whole bio goes there as paragraphs; `full` carries it as plain text.
+  function bioSection(f) {
+    if (!f || !f.bio) return null;
+    var html = "";
+    for (var i = 0; i < f.bio.length; i++) html += "<p>" + escapeText(f.bio[i]) + "</p>";
+    return { summary: html, full: f.bio.join("\n\n") };
+  }
+
+  // entity_cards — the host draws each card from its own image cache by name.
+  function relatedSection(f) {
+    if (!f || !f.related.length) return null;
+    var items = [];
+    for (var i = 0; i < f.related.length && i < 20; i++) items.push({ name: f.related[i], libraryKind: "artist" });
+    return { itemKind: "artist", items: items };
+  }
+
+  function statsSection(f) {
+    if (!f) return null;
+    var items = [];
+    if (f.listeners != null) items.push({ label: "Monthly listeners", value: f.listeners });
+    if (f.followers != null) items.push({ label: "Followers", value: f.followers });
+    if (f.worldRank != null) items.push({ label: "World rank", value: "#" + f.worldRank });
+    for (var i = 0; i < f.topCities.length; i++) {
+      var c = f.topCities[i];
+      items.push({ label: c.city + (c.country ? ", " + c.country : ""), value: c.listeners, unit: "listeners" });
+    }
+    return items.length ? { items: items } : null;
+  }
+
+  function photosSection(f, artistName) {
+    if (!f || !f.photos.length) return null;
+    var images = [];
+    for (var i = 0; i < f.photos.length; i++) {
+      var ph = f.photos[i];
+      images.push({ url: ph.url, caption: (artistName ? artistName + " — " : "") + ph.caption, source: "Spotify",
+        width: ph.width, height: ph.height });
+    }
+    return { images: images };
+  }
+
+  // entity_list — one row per date: the date and city, the venue under it,
+  // each linking to Spotify's concert page.
+  function concertsSection(f) {
+    if (!f || !f.concerts.length) return null;
+    var items = [];
+    for (var i = 0; i < f.concerts.length && i < 30; i++) {
+      var c = f.concerts[i];
+      var sub = c.venue + (c.festival && c.title ? " · " + c.title : "");
+      items.push({ name: c.date + (c.city ? " · " + c.city : ""), subtitle: sub || undefined,
+        url: c.id ? "https://open.spotify.com/concert/" + c.id : undefined });
+    }
+    return { items: items };
+  }
+
+  // -- Track credits (queryTrackCreditsGroupedModal: { trackUri }) --
+
+  // → { roles: [{ role, group, names[] }] (in Spotify's order, a role's names
+  // in the order listed, each once), sources: [label names] }. Null when the
+  // response has no credits block.
+  function creditsFromTrack(data) {
+    var t = data && data.trackUnion;
+    var ct = t && t.creditsTrait;
+    if (!ct) return null;
+    var roles = [];
+    var byRole = {};
+    var items = (ct.contributors && ct.contributors.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      var c = items[i];
+      if (!c || !c.name || !c.role) continue;
+      var r = byRole[c.role];
+      if (!r) {
+        r = byRole[c.role] = { role: c.role, group: (c.roleGroup && c.roleGroup.name) || "", names: [] };
+        roles.push(r);
+      }
+      if (r.names.indexOf(c.name) === -1) r.names.push(c.name);
+    }
+    var sources = [];
+    var src = (ct.sources && ct.sources.items) || [];
+    for (var j = 0; j < src.length; j++) if (src[j] && src[j].name && sources.indexOf(src[j].name) === -1) sources.push(src[j].name);
+    return { roles: roles, sources: sources };
+  }
+
+  // key_value rows: "Composers → A, B", "Lyricist → C", "Source → XL Recordings".
+  function creditsSection(credits) {
+    if (!credits) return null;
+    var items = [];
+    for (var i = 0; i < credits.roles.length; i++) {
+      var r = credits.roles[i];
+      var key = r.names.length > 1 && !/s$/i.test(r.role) ? r.role + "s" : r.role;
+      items.push({ key: key, value: r.names.join(", ") });
+    }
+    if (credits.sources.length) items.push({ key: credits.sources.length > 1 ? "Sources" : "Source", value: credits.sources.join(", ") });
+    // Only the main artist is no credit worth a tab.
+    var informative = false;
+    for (var k = 0; k < credits.roles.length; k++) if (credits.roles[k].role !== "Main Artist") informative = true;
+    return informative ? { items: items } : null;
+  }
+
+  // -- Lyrics (spclient color-lyrics/v2/track/{id}) --
+
+  // → { synced, lines: [{ ms, words }], provider } | null — null when there are
+  // none, or when Spotify capped them (capStatus other than "NONE": a free-tier
+  // preview, which must never be cached as the song's lyrics).
+  function lyricsFromColorLyrics(json) {
+    var l = json && json.lyrics;
+    if (!l || !l.lines || !l.lines.length) return null;
+    if (l.capStatus && l.capStatus !== "NONE") return null;
+    var lines = [];
+    for (var i = 0; i < l.lines.length; i++) {
+      var ln = l.lines[i];
+      if (!ln) continue;
+      var ms = parseInt(String(ln.startTimeMs == null ? "" : ln.startTimeMs), 10);
+      lines.push({ ms: isFinite(ms) ? ms : 0, words: String(ln.words == null ? "" : ln.words) });
+    }
+    // Synced only when Spotify says the lines are timed AND they carry times:
+    // a missing / unknown syncType would otherwise cache every line at 00:00.
+    var timed = false;
+    for (var k = 0; k < lines.length; k++) if (lines[k].ms > 0) { timed = true; break; }
+    var synced = (l.syncType === "LINE_SYNCED" || l.syncType === "SYLLABLE_SYNCED") && timed;
+    return { synced: synced, lines: lines, provider: l.providerDisplayName || l.provider || "" };
+  }
+
+  // 26780 → "00:26.78"
+  function lrcTime(ms) {
+    var cs = Math.round(ms / 10);
+    var m = Math.floor(cs / 6000), sec = Math.floor((cs % 6000) / 100), c = cs % 100;
+    return (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec + "." + (c < 10 ? "0" : "") + c;
+  }
+
+  // The lyrics info value ({ text, kind }, as LRCLIB returns it). Synced LRC
+  // only when `lengthOk` — the timings were made for Spotify's cut, and a
+  // synced value is cached forever, so they are given only when that cut is
+  // the user's (within 2s); otherwise the words alone. "♪" lines (Spotify's
+  // instrumental marks) become blank timed lines in LRC and are dropped from
+  // the words.
+  function lyricsValue(lyr, lengthOk) {
+    if (!lyr || !lyr.lines.length) return null;
+    var out = [];
+    var i;
+    if (lyr.synced && lengthOk) {
+      for (i = 0; i < lyr.lines.length; i++) {
+        var w = lyr.lines[i].words.trim();
+        out.push("[" + lrcTime(lyr.lines[i].ms) + "]" + (w === "♪" ? "" : w));
+      }
+      return { text: out.join("\n"), kind: "synced" };
+    }
+    for (i = 0; i < lyr.lines.length; i++) {
+      var t = lyr.lines[i].words.trim();
+      if (t && t !== "♪") out.push(t);
+    }
+    return out.length ? { text: out.join("\n"), kind: "plain" } : null;
+  }
+
+  // Spotify's track length vs the user's copy, in seconds (2s, LRCLIB's window).
+  function sameLength(durationMs, durationSecs) {
+    return durationSecs > 0 && durationMs > 0 && Math.abs(durationMs / 1000 - durationSecs) <= 2;
+  }
+
+  // -- Home --
+
+  // The music-chip home, as the web player asks for it. timeZone and sp_t are
+  // the page's (filled in by the in-page runner, see DIRECT_PAGE_FILLS).
+  function homeVars() {
+    return {
+      includeHomeChapterVideoCards: false, homeEndUserIntegration: "INTEGRATION_WEB_PLAYER",
+      facet: "music-chip", sectionItemsLimit: 10, includeEpisodeContentRatingsV2: false,
+    };
+  }
+
+  // A `home` response → the shelves scriptScrapeShelves posts:
+  //   [{ section, description, playlists: [{ id, name, subtitle, imageUrl, kind }] }]
+  // matching its names, because Home shelves are registered by section name:
+  //   - "More like X" / "Discover more from X" sections are named after their
+  //     header artist ("X"), as the page's heading reads; two with the same
+  //     name are one shelf (the caller already de-duplicates by name + id).
+  //   - the untitled top grid (HomeShortsSectionData) is "Home".
+  //   - the single-card feed (HomeFeedBaselineSectionData) isn't a shelf on
+  //     the page and isn't one here.
+  // Playlists always, albums only with includeAlbums; artists, podcasts and
+  // unnamed items never. A section with no such item is left out.
+  function shelvesFromHome(data, includeAlbums) {
+    var secs = data && data.home && data.home.sectionContainer &&
+      data.home.sectionContainer.sections && data.home.sectionContainer.sections.items;
+    if (!secs) return null;
+    var out = [];
+    for (var i = 0; i < secs.length; i++) {
+      var s = secs[i] || {};
+      var sd = s.data || {};
+      var type = sd.__typename;
+      if (type !== "HomeGenericSectionData" && type !== "HomeShortsSectionData") continue;
+      var he = sd.headerEntity && sd.headerEntity.data;
+      var name = type === "HomeShortsSectionData" ? "Home"
+        : (he && he.profile && he.profile.name) || (sd.title && sd.title.transformedLabel) || "";
+      if (!name) continue;
+      var desc = (sd.subtitle && sd.subtitle.transformedLabel) || "";
+      var items = (s.sectionItems && s.sectionItems.items) || [];
+      var cards = [];
+      for (var j = 0; j < items.length; j++) {
+        var c = items[j] && items[j].content;
+        var d = c && c.data;
+        if (!d || !d.name) continue;
+        if (c.__typename === "PlaylistResponseWrapper") {
+          var pid = idFromUri(d.uri || items[j].uri, "playlist");
+          var img = d.images && d.images.items && d.images.items[0];
+          if (pid) cards.push({ id: pid, name: d.name, subtitle: htmlToText(d.description),
+            imageUrl: largestImage(img && img.sources), kind: "playlist" });
+        } else if (c.__typename === "AlbumResponseWrapper" && includeAlbums) {
+          var alid = idFromUri(d.uri || items[j].uri, "album");
+          if (alid) cards.push({ id: alid, name: d.name, subtitle: artistNames(d.artists).join(", "),
+            imageUrl: largestImage(d.coverArt && d.coverArt.sources), kind: "album" });
+        }
+      }
+      if (cards.length) out.push({ section: name, description: desc, playlists: cards });
+    }
+    return out;
+  }
+
+  // -- In-page code --
+
+  // Installs the request capture (idempotent; survives in-app navigations, not
+  // reloads). Returns its state: { headers, hashes, vars, scanned, fetch }.
+  function installCaptureInPage() {
+    var C = window.__viboSpot;
+    if (C) return C;
+    C = window.__viboSpot = { headers: null, hashes: {}, vars: {}, responses: {}, scanned: false, fetch: window.fetch };
+    // Operations whose answer the page's own request is kept for: Spotify's
+    // home varies between requests, so the shelves read must be the ones the
+    // page is showing (what the scrape read), not a second sample.
+    var KEEP = { home: 1 };
+    window.fetch = function (input, init) {
+      var keepOp = null;
+      try {
+        var url = typeof input === "string" ? input : (input && (input.href || input.url)) || "";
+        if (/^https:\/\/(api-partner\.spotify\.com|[a-z0-9-]*spclient[a-z0-9.-]*\.spotify\.com)\//.test(url)) {
+          var h = new Headers((init && init.headers) || (input && typeof input === "object" && input.headers) || undefined);
+          if (h.get("authorization")) {
+            C.headers = {
+              authorization: h.get("authorization"),
+              "client-token": h.get("client-token") || "",
+              "spotify-app-version": h.get("spotify-app-version") || "",
+            };
+          }
+          var body = init && init.body;
+          if (typeof body === "string" && body.indexOf("persistedQuery") !== -1) {
+            var b = JSON.parse(body);
+            if (b && b.operationName && b.extensions && b.extensions.persistedQuery) {
+              C.hashes[b.operationName] = b.extensions.persistedQuery.sha256Hash;
+              C.vars[b.operationName] = b.variables || {};
+              if (KEEP[b.operationName]) keepOp = b.operationName;
+            }
+          }
+        }
+      } catch (e) { /* never break the page's own request */ }
+      var res = C.fetch.apply(this, arguments);
+      if (keepOp && res && typeof res.then === "function") {
+        res.then(function (r) {
+          if (!r || !r.ok) return;
+          r.clone().json().then(function (j) {
+            if (j && j.data) C.responses[keepOp] = { at: Date.now(), data: j.data };
+          }, function () { /* not JSON: nothing kept */ });
+        }, function () { /* the page's own failure is the page's */ });
+      }
+      return res;
+    };
+    return C;
+  }
+
+  // Evaled by withSpotifyWindow as the window opens and after each navigation,
+  // so the capture sees the page's first requests.
+  var SCRIPT_CAPTURE = '(function(){try{(' + installCaptureInPage.toString() + ')()}catch(e){}})()';
+
+  // The in-page core every direct script runs on: the capture, the session
+  // headers (nudging the page for them when needed), hashes and queries.
+  // cfg.path is where a nudge goes (the entity's own page).
+  function directCoreInPage(cfg) {
+    var PATHFINDER = "https://api-partner.spotify.com/pathfinder/v2/query";
+    var C = installCaptureInPage();
+    function send(type, data) { try { window.__viboplr.send(type, data); } catch (e) { /* bridge gone: window closing */ } }
+    function dbg(msg, data) { send("dbg", { tag: "direct", msg: msg, data: data, level: "info" }); }
+    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+    function nudge(path) {
+      history.pushState({}, "", path);
+      dispatchEvent(new PopStateEvent("popstate", { state: {} }));
+    }
+    // A pushState to the page we're already on renders nothing new, so the
+    // nudge goes to the entity's page or, when already there, to Search.
+    function ensureHeaders() {
+      if (C.headers) return Promise.resolve();
+      var target = cfg.path && location.pathname !== cfg.path ? cfg.path
+        : location.pathname !== "/search" ? "/search" : "/collection/tracks";
+      dbg("no session headers yet — nudging the page to " + target);
+      core.nudged = true;
+      nudge(target);
+      var tries = 0;
+      return (function poll() {
+        if (C.headers) return Promise.resolve();
+        if (++tries > 50) return Promise.reject("the page made no request to copy a session token from");
+        return wait(200).then(poll);
+      })();
+    }
+
+    function scanBundles() {
+      C.scanned = true;
+      var urls = {};
+      var scripts = document.querySelectorAll("script[src]");
+      for (var i = 0; i < scripts.length; i++) urls[scripts[i].src] = 1;
+      var entries = performance.getEntriesByType("resource");
+      for (var j = 0; j < entries.length; j++) if (/\.js(\?|$)/.test(entries[j].name)) urls[entries[j].name] = 1;
+      var list = Object.keys(urls).filter(function (u) { return /^https:\/\/(open\.spotifycdn\.com|open\.spotify\.com)\//.test(u); });
+      var re = /"([A-Za-z0-9_]+)",\s*"query",\s*"([0-9a-f]{64})"/g;
+      var found = 0;
+      return Promise.all(list.map(function (u) {
+        return C.fetch.call(window, u).then(function (r) { return r.text(); }).then(function (t) {
+          var m;
+          while ((m = re.exec(t))) { if (!C.hashes[m[1]]) { C.hashes[m[1]] = m[2]; found++; } }
+        }).catch(function (e) { dbg("bundle unreadable: " + u, String(e)); });
+      })).then(function () { dbg("bundle scan", { scripts: list.length, newHashes: found }); });
+    }
+
+    function hashFor(op) {
+      if (C.hashes[op]) return Promise.resolve(C.hashes[op]);
+      if (C.scanned) return Promise.reject("no query id for " + op);
+      return scanBundles().then(function () {
+        if (!C.hashes[op]) throw "no query id for " + op;
+        return C.hashes[op];
+      });
+    }
+
+    function authHeaders(extra) {
+      var headers = extra || {};
+      for (var hk in C.headers) if (C.headers[hk]) headers[hk] = C.headers[hk];
+      return headers;
+    }
+
+    function query(op, vars) {
+      // The page's own variables for this operation (when it sent it) carry any
+      // flags the current release expects; ours override what we set.
+      var merged = {};
+      var base = C.vars[op] || {};
+      for (var k in base) if (Object.prototype.hasOwnProperty.call(base, k)) merged[k] = base[k];
+      for (var k2 in vars) if (Object.prototype.hasOwnProperty.call(vars, k2)) merged[k2] = vars[k2];
+      return hashFor(op).then(function (hash) {
+        return C.fetch.call(window, PATHFINDER, {
+          method: "POST",
+          headers: authHeaders({ "content-type": "application/json;charset=UTF-8", accept: "application/json" }),
+          body: JSON.stringify({ operationName: op, variables: merged, extensions: { persistedQuery: { version: 1, sha256Hash: hash } } }),
+        });
+      }).then(function (r) {
+        // An expired token: forget it so the next read copies a fresh one.
+        if (r.status === 401) C.headers = null;
+        if (!r.ok) throw op + " answered HTTP " + r.status;
+        return r.json();
+      }).then(function (j) {
+        if (!j || !j.data) throw op + ": " + ((j && j.errors && j.errors[0] && j.errors[0].message) || "no data");
+        return j.data;
+      });
+    }
+
+    // A GET on spclient (REST routes such as inspiredby-mix, color-lyrics).
+    // Resolves null on 404 (the resource doesn't exist: no lyrics for a track).
+    function spclient(path, extraHeaders) {
+      var headers = authHeaders({ accept: "application/json" });
+      for (var xh in (extraHeaders || {})) headers[xh] = extraHeaders[xh];
+      return C.fetch.call(window, "https://spclient.wg.spotify.com" + path, {
+        headers: headers,
+      }).then(function (r) {
+        if (r.status === 401) C.headers = null;
+        if (r.status === 404) return null;
+        if (!r.ok) throw path.split("?")[0] + " answered HTTP " + r.status;
+        return r.json();
+      });
+    }
+
+    // Values only the page knows, for variables the web player sends.
+    function pageValue(name) {
+      if (name === "timeZone") {
+        try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { return "UTC"; }
+      }
+      if (name === "sp_t") {
+        var m = document.cookie.match(/(?:^|;\s*)sp_t=([^;]+)/);
+        return m ? decodeURIComponent(m[1]) : undefined;
+      }
+      return undefined;
+    }
+
+    var core = { C: C, send: send, dbg: dbg, ensureHeaders: ensureHeaders, query: query, spclient: spclient, pageValue: pageValue, nudged: false };
+    return core;
+  }
+
+  // Declares the pure helpers inside the page, so the in-page functions below
+  // can call them by the same names (each is stringified with toString()).
+  var DIRECT_PRELUDE =
+    'var largestImage=' + largestImage.toString() + ';' +
+    'var formatMs=' + formatMs.toString() + ';' +
+    'var htmlToText=' + htmlToText.toString() + ';' +
+    'var artistNames=' + artistNames.toString() + ';' +
+    'var mapTrackRow=' + mapTrackRow.toString() + ';' +
+    'var installCaptureInPage=' + installCaptureInPage.toString() + ';' +
+    'var directCoreInPage=' + directCoreInPage.toString() + ';';
+
+  // Page variables the in-page runner fills when the caller leaves them out.
+  var DIRECT_PAGE_FILLS = { home: ["timeZone", "sp_t"] };
+
+  // -- Tracklists (playlist / album / Liked Songs / song radio) --
+  //
+  // Posts the same "tracks-progress" / "tracks" messages, in the same shape,
+  // as scriptScrollThenScrape (plus source: "direct"), so the callers'
+  // handlers are shared. Any failure posts "tracks-direct-failed".
+  // cfg: { tag, kind, entityId, path, gen, maxItems }.
+  function directTracksInPage(cfg, core) {
+    function fail(reason) {
+      core.dbg("FAILED: " + reason);
+      core.send("tracks-direct-failed", { playlistId: cfg.tag, gen: cfg.gen, reason: String(reason) });
+    }
+
+    var out = [];
+    var seen = {};
+    function add(d, uri, albumName, albumCover) {
+      var row = mapTrackRow(d, uri, albumName, albumCover);
+      if (!row) return;
+      // Same rule as the row scraper: one row per Spotify id.
+      var key = row.spotifyId || row.name;
+      if (seen[key]) return;
+      seen[key] = 1;
+      out.push(row);
+    }
+
+    var meta = { description: "", coverUrl: null };
+    var total = null;
+    // The playlist the playlist reader pages: the entity itself, or — for a
+    // song radio — the station inspiredby-mix names for the seed track.
+    var playlistId = cfg.entityId;
+    var stationId = null;
+
+    // Song radio: the station the web player's "Go to song radio" opens is a
+    // playlist (37i9dQZF1E8…). spclient's inspiredby-mix names it for a seed
+    // track; the station is then read like any playlist.
+    function resolveStation() {
+      return core.spclient("/inspiredby-mix/v2/seed_to_playlist/spotify:track:" +
+        encodeURIComponent(cfg.entityId) + "?response-format=json").then(function (j) {
+        var items = (j && j.mediaItems) || [];
+        for (var i = 0; i < items.length; i++) {
+          var u = items[i] && items[i].uri;
+          if (typeof u === "string" && u.indexOf("spotify:playlist:") === 0) {
+            stationId = u.substring(17);
+            playlistId = stationId;
+            core.dbg("station", { seed: cfg.entityId, station: stationId });
+            return;
+          }
+        }
+        throw "inspiredby-mix named no station for the seed";
+      });
+    }
+
+    function progress() {
+      core.send("tracks-progress", { playlistId: cfg.tag, found: out.length, total: total, tracks: out, gen: cfg.gen, source: "direct" });
+    }
+
+    // Each kind: read one page at `offset`, add its tracks, and return how many
+    // items the page held (0 ends the loop) after setting `total`.
+    var readers = {
+      playlist: function (offset) {
+        var uri = "spotify:playlist:" + playlistId;
+        var op = offset === 0 ? "fetchPlaylist" : "fetchPlaylistContents";
+        var vars = { uri: uri, offset: offset, limit: 100 };
+        if (offset === 0) vars.enableWatchFeedEntrypoint = false;
+        return core.query(op, vars).then(function (data) {
+          var pv = data.playlistV2;
+          if (!pv || !pv.content || !pv.content.items) throw op + ": unexpected response (" + (pv && pv.__typename) + ")";
+          if (offset === 0) {
+            meta.description = htmlToText(pv.description);
+            var img = pv.images && pv.images.items && pv.images.items[0];
+            meta.coverUrl = largestImage(img && img.sources);
+          }
+          total = pv.content.totalCount;
+          var items = pv.content.items;
+          for (var i = 0; i < items.length; i++) {
+            var w = items[i] && items[i].itemV2;
+            if (w && w.data && w.data.__typename === "Track") add(w.data, w._uri, null, null);
+          }
+          return items.length;
+        });
+      },
+      album: function (offset) {
+        return core.query("getAlbum", { uri: "spotify:album:" + cfg.entityId, locale: "", offset: offset, limit: 50 }).then(function (data) {
+          var au = data.albumUnion;
+          if (!au || !au.tracksV2 || !au.tracksV2.items) throw "getAlbum: unexpected response (" + (au && au.__typename) + ")";
+          var cover = largestImage(au.coverArt && au.coverArt.sources);
+          if (offset === 0) meta.coverUrl = cover;
+          total = au.tracksV2.totalCount;
+          var items = au.tracksV2.items;
+          for (var i = 0; i < items.length; i++) {
+            var t = items[i] && items[i].track;
+            if (t) add(t, t.uri, au.name, cover);
+          }
+          return items.length;
+        });
+      },
+      collection: function (offset) {
+        return core.query("fetchLibraryTracks", { offset: offset, limit: 100 }).then(function (data) {
+          var lib = data.me && data.me.library && data.me.library.tracks;
+          if (!lib || !lib.items) throw "fetchLibraryTracks: unexpected response";
+          total = lib.totalCount;
+          var items = lib.items;
+          for (var i = 0; i < items.length; i++) {
+            var w = items[i] && items[i].track;
+            if (w && w.data && w.data.__typename === "Track") add(w.data, w._uri, null, null);
+          }
+          return items.length;
+        });
+      },
+    };
+    readers.radio = function (offset) {
+      if (offset === 0 && !stationId) return resolveStation().then(function () { return readers.playlist(0); });
+      return readers.playlist(offset);
+    };
+
+    var read = readers[cfg.kind];
+    if (!read) { fail("no direct reader for kind " + cfg.kind); return; }
+    var offset = 0;
+    // Stopped at cfg.maxItems with more left: the answer says so (truncated),
+    // never passes for the whole list.
+    var truncated = false;
+    var t0 = Date.now();
+    function next() {
+      return read(offset).then(function (n) {
+        offset += n;
+        progress();
+        if (n === 0 || (total !== null && offset >= total)) return;
+        if (offset >= cfg.maxItems) { truncated = total !== null && total > offset; return; }
+        return next();
+      });
+    }
+    core.ensureHeaders().then(next).then(function () {
+      core.dbg("DONE", { kind: cfg.kind, parsed: out.length, total: total, ms: Date.now() - t0 });
+      core.send("tracks", {
+        playlistId: cfg.tag, tracks: out, total: total, description: meta.description,
+        coverUrl: meta.coverUrl, coverRule: meta.coverUrl ? "direct" : null, gen: cfg.gen, source: "direct",
+        stationId: stationId, truncated: truncated,
+      });
+    }).catch(function (e) { fail(e && e.message ? e.message : e); });
+  }
+
+  // tag: the playlistId the messages carry (what the caller's handler matches).
+  // entityId: the Spotify id — a playlist / album id, the SEED TRACK id for
+  // "radio", unused for "collection". opts.kind: playlist | album | collection
+  // | radio.
+  function scriptDirectTracks(tag, entityId, gen, opts) {
+    var kind = (opts && opts.kind) || "playlist";
+    var path = kind === "album" ? "/album/" + entityId
+      : kind === "collection" ? "/collection/tracks"
+      : kind === "radio" ? "/track/" + entityId
+      : "/playlist/" + entityId;
+    var cfg = JSON.stringify({
+      tag: tag, kind: kind, entityId: entityId, path: path, gen: gen,
+      // Liked Songs has no size limit (a playlist's is Spotify's own 10,000).
+      maxItems: (opts && opts.maxItems) || (kind === "collection" ? DIRECT_MAX_LIKED : DIRECT_MAX_ITEMS),
+    });
+    return '(function(){try{' + DIRECT_PRELUDE +
+      '(' + directTracksInPage.toString() + ')(' + cfg + ',directCoreInPage(' + cfg + '))' +
+    '}catch(e){' +
+      'try{window.__viboplr.send("tracks-direct-failed",{playlistId:' + JSON.stringify(tag) + ',gen:' + gen + ',reason:"script error: "+e})}catch(_){}' +
+    '}})()';
+  }
+
+  // -- One Pathfinder query --
+  //
+  // Runs `op` with `vars` and posts "pathfinder" { tag, gen, data } — or
+  // { tag, gen, error } — for the host to map (candidatesFromSearch,
+  // playsFromTrack, shelvesFromHome …). Colour palettes and the like are
+  // dropped before posting: they are most of a search response's bytes.
+  // cfg: { tag, op, vars, path, gen, fills }.
+  function pathfinderInPage(cfg, core) {
+    var DROP = { visualIdentity: 1, extractedColors: 1, extractedColorSet: 1, onPlatformReputationTrait: 1 };
+    function prune(v) {
+      if (Array.isArray(v)) { for (var i = 0; i < v.length; i++) v[i] = prune(v[i]); return v; }
+      if (v && typeof v === "object") {
+        for (var k in v) {
+          if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+          if (DROP[k]) delete v[k]; else v[k] = prune(v[k]);
+        }
+      }
+      return v;
+    }
+    var vars = cfg.vars || {};
+    var fills = cfg.fills || [];
+    for (var i = 0; i < fills.length; i++) {
+      if (vars[fills[i]] === undefined) {
+        var pv = core.pageValue(fills[i]);
+        if (pv !== undefined) vars[fills[i]] = pv;
+      }
+    }
+    var t0 = Date.now();
+    var kept = cfg.pageAnswerMs && core.C.responses && core.C.responses[cfg.op];
+    if (kept && Date.now() - kept.at <= cfg.pageAnswerMs) {
+      core.dbg(cfg.op + ": the page's own answer", { ageMs: Date.now() - kept.at });
+      core.send("pathfinder", { tag: cfg.tag, gen: cfg.gen, op: cfg.op, data: prune(JSON.parse(JSON.stringify(kept.data))), fromPage: true });
+      return;
+    }
+    core.ensureHeaders().then(function () {
+      return cfg.spclientPath ? core.spclient(cfg.spclientPath, cfg.headers) : core.query(cfg.op, vars);
+    }).then(function (data) {
+      core.dbg(cfg.op + " ok", { ms: Date.now() - t0 });
+      core.send("pathfinder", { tag: cfg.tag, gen: cfg.gen, op: cfg.op, data: prune(data), nudged: core.nudged });
+    }).catch(function (e) {
+      var reason = String(e && e.message ? e.message : e);
+      core.dbg(cfg.op + " FAILED: " + reason);
+      core.send("pathfinder", { tag: cfg.tag, gen: cfg.gen, op: cfg.op, error: reason, nudged: core.nudged });
+    });
+  }
+
+  // A GET on a spclient route through the same runner (posts "pathfinder";
+  // data null when the route answered 404). headers: extra request headers.
+  function scriptSpclient(tag, gen, spclientPath, headers, path) {
+    var cfg = JSON.stringify({ tag: tag, gen: gen, op: "spclient", spclientPath: spclientPath, headers: headers || {}, path: path || null, fills: [] });
+    return '(function(){try{' + DIRECT_PRELUDE +
+      '(' + pathfinderInPage.toString() + ')(' + cfg + ',directCoreInPage(' + cfg + '))' +
+    '}catch(e){' +
+      'try{window.__viboplr.send("pathfinder",{tag:' + JSON.stringify(tag) + ',gen:' + gen + ',op:"spclient",error:"script error: "+e})}catch(_){}' +
+    '}})()';
+  }
+
+  // path: where a nudge for the session headers should go (null: Search).
+  // opts.pageAnswerMs: use the page's own answer to `op` when the capture kept
+  // one this recent (only ops listed in installCaptureInPage's KEEP).
+  function scriptPathfinder(tag, gen, op, vars, path, opts) {
+    var cfg = JSON.stringify({
+      tag: tag, gen: gen, op: op, vars: vars || {}, path: path || null, fills: DIRECT_PAGE_FILLS[op] || [],
+      pageAnswerMs: (opts && opts.pageAnswerMs) || 0,
+    });
+    return '(function(){try{' + DIRECT_PRELUDE +
+      '(' + pathfinderInPage.toString() + ')(' + cfg + ',directCoreInPage(' + cfg + '))' +
+    '}catch(e){' +
+      'try{window.__viboplr.send("pathfinder",{tag:' + JSON.stringify(tag) + ',gen:' + gen + ',op:' + JSON.stringify(op) + ',error:"script error: "+e})}catch(_){}' +
+    '}})()';
+  }
+
   // ---- Shared browse-window + login helper ----
 
   // Open a Spotify browse window, wait until logged in (surfacing a sign-in
@@ -2695,7 +3679,11 @@ function activate(api) {
           'var name=te?(te.getAttribute("title")||_txt(te)):"";' +
           'var abl=c.querySelector("a[href*=\\"/album/\\"]");' +
           'if(abl){var aid=_id(abl.getAttribute("href"),"album");' +
-            'if(aid&&!seen["a"+aid]){seen["a"+aid]=1;out.push({kind:"album",id:aid,title:name||_txt(abl),artists:_artists(c)})}continue}' +
+            // A compilation ("2007 • Various Artists") names its artist without
+            // a link: read it from the subtitle after the last "•".
+            'var aa=_artists(c);if(!aa.length){var sb=c.querySelector("[data-encore-id=\\"cardSubtitle\\"]");var st=sb?_txt(sb):"";var bi=st.lastIndexOf("•");' +
+              'if(bi!==-1){var ps=st.substring(bi+1).split(",");for(var pi=0;pi<ps.length;pi++){var pn=ps[pi].trim();if(pn&&aa.indexOf(pn)===-1)aa.push(pn)}}}' +
+            'if(aid&&!seen["a"+aid]){seen["a"+aid]=1;out.push({kind:"album",id:aid,title:name||_txt(abl),artists:aa})}continue}' +
           'var arl=c.querySelector("a[href*=\\"/artist/\\"]");' +
           'if(arl){var rid=_id(arl.getAttribute("href"),"artist");' +
             'if(rid&&!seen["r"+rid]){seen["r"+rid]=1;out.push({kind:"artist",id:rid,title:name||_txt(arl)})}}' +
@@ -2855,6 +3843,27 @@ function activate(api) {
     return best;
   }
 
+  // pickTrackCandidate, preferring the release of the song that has the user's
+  // length (the album cut over a remaster or a radio edit) when it is known.
+  // Falls back to the plain pick when no candidate is within 2s.
+  function pickTrackByLength(candidates, title, artist, albumHint, durationSecs) {
+    var base = pickTrackCandidate(candidates, title, artist, albumHint);
+    if (!(durationSecs > 0) || !base) return base;
+    if (sameLength(base.durationMs, durationSecs)) return base;
+    // Only a title as good as the plain pick's: an exact "Song" must never
+    // give way to "Song (Acoustic)" or a remix that happens to be our length
+    // (its synced lyrics would be cached for the original, for good).
+    var need = titleScore(base.title, title);
+    var best = null, bestDiff = Infinity;
+    for (var i = 0; i < (candidates || []).length; i++) {
+      var c = candidates[i];
+      if (!c || c.kind !== "track" || !c.durationMs || !artistMatches(c.artists, artist) || titleScore(c.title, title) < need) continue;
+      var diff = Math.abs(c.durationMs / 1000 - durationSecs);
+      if (diff <= 2 && diff < bestDiff) { best = c; bestDiff = diff; }
+    }
+    return best || base;
+  }
+
   // Best album card for (album, artist). An exact name beats an edition
   // ("OK Computer" over "OK Computer OKNOTOK 1997 2017").
   function pickAlbumCandidate(candidates, album, artist) {
@@ -2981,12 +3990,17 @@ function activate(api) {
         activeScrapeHandle = h;
         recordPageVisit(url, "open");
         h.eval(SCRIPT_MUTE_AUDIO).catch(function () {});
+        // The direct reads' request capture, installed as early as we can so
+        // it sees the page's first requests (session headers, query hashes).
+        h.eval(SCRIPT_CAPTURE).catch(function () {});
         if (h.onNavigation) {
           h.onNavigation(function (u) {
             recordPageVisit(u, "navigate");
             // Navigations reload the document and wipe injected scripts, so the
-            // page can autoplay audio again — re-mute after each navigation.
+            // page can autoplay audio again — re-mute after each navigation —
+            // and the capture is gone with the old document.
             h.eval(SCRIPT_MUTE_AUDIO).catch(function () {});
+            h.eval(SCRIPT_CAPTURE).catch(function () {});
           });
         }
 
@@ -3105,7 +4119,34 @@ function activate(api) {
           resolve({ playlists: playlists, sections: sections, sectionDescriptions: sectionDescriptions || {} });
         }
 
+        // Direct first: the `home` query (shelvesFromHome gives the scraper's
+        // shelf shape, names included); the page scrape is the fallback.
+        var homeTag = "home-" + ctx.gen;
+        var directPhase = true;
+        var directTimer = null;
+        // Did the direct read move the page (in-app) to get a session token?
+        // A timed-out read may have — assume so.
+        var directNudged = false;
+
         ctx.setHandler(function (msg) {
+          if (msg.type === "pathfinder" && msg.data && msg.data.tag === homeTag) {
+            if (!directPhase || done) return;
+            directPhase = false;
+            if (directTimer) { clearTimeout(directTimer); directTimer = null; }
+            // A "script error" reply can't say whether the page was moved:
+            // assume it was, so the fallback re-navigates.
+            directNudged = msg.data.nudged !== false;
+            var direct = msg.data.error ? null : shelvesFromHome(msg.data.data, state.includeAlbums);
+            if (!direct || direct.length === 0) {
+              plog("warn", "shelves", "direct home read failed (" + (msg.data.error || (direct ? "no shelves" : "unexpected response")) +
+                ") — falling back to the page scrape");
+              startPageScrape();
+              return;
+            }
+            plog("info", "shelves", "home: " + direct.length + " shelves (direct" + (msg.data.fromPage ? ", the page's own answer" : "") + ")");
+            // Same path as the page scrape's answer from here on.
+            msg = { type: "shelves", data: { shelves: direct } };
+          }
           if (msg.type === "error" && msg.data) {
             plog("warn", "shelves", "scrape error: " + msg.data.message);
             finishScrape([], [], {});
@@ -3152,17 +4193,33 @@ function activate(api) {
           }
         });
 
-        // The window already opened directly at the music-chip URL. Only reload
-        // if login bounced us elsewhere (e.g. to the account/welcome page) —
-        // otherwise scrape the page that's already loaded. Skipping the
-        // redundant reload avoids a full second page load (and its reload-time
-        // autoplay attempt) on the common already-on-home path.
-        setTimeout(function () {
+        setSyncStage("Reading your Spotify home…");
+        // The page's own home answer when the capture saw it (Spotify's home
+        // varies between requests, and those are the shelves on screen).
+        evalLogged(h, scriptPathfinder(homeTag, ctx.gen, "home", homeVars(), null, { pageAnswerMs: 5 * 60 * 1000 }), "shelves");
+        directTimer = setTimeout(function () {
+          if (!directPhase || done) return;
+          directPhase = false;
+          plog("warn", "shelves", "direct home read timed out — falling back to the page scrape");
+          directNudged = true;
+          startPageScrape();
+        }, 20000);
+
+        // The page scrape. The window already opened directly at the
+        // music-chip URL. Only reload if login bounced us elsewhere (e.g. to
+        // the account/welcome page) — otherwise scrape the page that's already
+        // loaded. Skipping the redundant reload avoids a full second page load
+        // (and its reload-time autoplay attempt) on the common already-on-home
+        // path.
+        function startPageScrape() { setTimeout(function () {
           if (ctx.isStale()) { finishScrape([], [], {}); return; }
           setSyncStage("Reading your Spotify home…");
+          // Not ctx.loginUrl alone: the direct read may have nudged the page
+          // elsewhere in-app (pushState) while looking for a session token.
           var onMusicChip = ctx.loginUrl &&
             ctx.loginUrl.indexOf("/home") !== -1 &&
-            ctx.loginUrl.indexOf("facet=music-chip") !== -1;
+            ctx.loginUrl.indexOf("facet=music-chip") !== -1 &&
+            !directNudged;
           if (onMusicChip) {
             // Already where we need to be — scrape after a short settle.
             setTimeout(function () {
@@ -3177,7 +4234,7 @@ function activate(api) {
               h.eval(scriptScrapeShelves(state.includeAlbums));
             }, 4000);
           }
-        }, 1000);
+        }, 1000); }
       });
     }).then(function (res) {
       finishReport(res ? "ok" : "cancelled");
@@ -3211,6 +4268,9 @@ function activate(api) {
         var attempts = 0;
         var maxSteps = 60;
         var timeoutMs = 45000;
+        // True while the direct read (scriptDirectTracks) is the attempt in
+        // flight; its failure, or its timeout, hands over to the page scrape.
+        var directActive = false;
 
         function settle(tracks, descr, coverUrl) {
           if (settled) return;
@@ -3244,15 +4304,23 @@ function activate(api) {
         }
 
         function arm() {
+          if (trackTimeout) clearTimeout(trackTimeout);
           trackTimeout = setTimeout(function () {
             if (ctx.isStale()) { settle(oldTracks); return; }
-            plog("warn", "tracks", "Timeout scraping \"" + pl.name + "\" (" + pl.id + ")");
+            plog("warn", "tracks", (directActive ? "Timeout reading " : "Timeout scraping ") +
+              "\"" + pl.name + "\" (" + pl.id + ")");
             retryOrFinish();
           }, timeoutMs);
         }
         function retryOrFinish() {
           if (settled) return;
           if (trackTimeout) { clearTimeout(trackTimeout); trackTimeout = null; }
+          // A failed direct read doesn't spend a scrape attempt: the page scrape
+          // still gets its own two tries.
+          if (directActive) {
+            directActive = false;
+            attempts = 0;
+          }
           if (attempts < 2) {
             attempts++;
             h.eval(scriptNavigatePlaylist(pl.id, pl.kind));
@@ -3272,31 +4340,53 @@ function activate(api) {
           // stamping the cache — only settle() (the terminal "tracks" message)
           // writes to disk / sets tracksFetchedAt, so an interrupted load never
           // leaves partial data cached or treated as fresh.
+          if (msg.type === "tracks-direct-failed" && msg.data && msg.data.playlistId === pl.id) {
+            // Only the direct attempt in flight may hand over; a late failure
+            // from one that already timed out must not restart the scrape.
+            if (settled || msg.data.gen !== gen || !directActive) return;
+            plog("warn", "tracks", "Direct read of \"" + pl.name + "\" failed (" + msg.data.reason +
+              ") — falling back to the page scrape");
+            retryOrFinish();
+            return;
+          }
           if (msg.type === "tracks-progress" && msg.data && msg.data.playlistId === pl.id) {
             // Ignore once settled: a late progress message (still in flight as the
             // window closes) must not clobber the final settled tracks/metadata.
             if (settled) return;
             if (msg.data.gen !== gen) return;
             if (!Array.isArray(msg.data.tracks)) return;
+            // A big list reads in many pages: each one proves it's alive.
+            if (directActive && msg.data.source === "direct") arm();
             state.playlistTracks[pl.id] = fillAlbumName(pl, upgradeTrackImages(msg.data.tracks));
             if (state.currentPlaylist && state.currentPlaylist.id === pl.id) renderPlaylist();
             return;
           }
           if (msg.type === "tracks" && msg.data && msg.data.playlistId === pl.id) {
+            // A late answer from the other attempt (direct after it timed out, or
+            // the reverse) is still a complete tracklist for this playlist.
+            if (msg.data.gen !== undefined && msg.data.gen !== gen) return;
             var tracks = msg.data.tracks || [];
             if (msg.data.error) { plog("warn", "tracks", "Scrape error: " + msg.data.error); retryOrFinish(); return; }
+            // A direct read that says the list HAS no tracks is final: re-reading
+            // the page twice would only take ~100s to say the same.
+            if (tracks.length === 0 && msg.data.source === "direct" && msg.data.total === 0) {
+              plog("info", "tracks", "\"" + pl.name + "\" is empty (direct)");
+              settle([]);
+              return;
+            }
             if (tracks.length === 0) { retryOrFinish(); return; }
+            if (msg.data.source === "direct") {
+              dbg("tracks", "direct read \"" + pl.name + "\": " + tracks.length + "/" + msg.data.total);
+            }
             settle(tracks, msg.data.description, msg.data.coverUrl);
           }
         });
 
-        attempts = 1;
-        h.eval(scriptNavigatePlaylist(pl.id, pl.kind));
-        setTimeout(function () {
-          if (ctx.isStale()) { settle(oldTracks); return; }
-          h.eval(scriptScrollThenScrape(pl.id, gen, { maxSteps: maxSteps, kind: pl.kind }));
-          arm();
-        }, 4000);
+        // Direct read first (no navigation, no scrolling); the page scrape is
+        // the fallback when it fails or times out.
+        directActive = true;
+        evalLogged(h, scriptDirectTracks(pl.id, pl.id, gen, { kind: pl.kind }), "tracks");
+        arm();
       });
     }).then(function (tracks) {
       delete state.tracksLoading[pl.id];
@@ -3697,17 +4787,18 @@ function activate(api) {
   //
   // Registered on the "track" target so it appears on every track surface in the
   // app (library, queue, playlist, plugin views, search). The app-side target
-  // carries only title + artist, so we search Spotify for the seed, open its
-  // "Go to song radio" page, scrape the radio tracklist, then replace the queue
-  // and play it. Reuses withSpotifyWindow (login flow + single-window gate +
+  // carries only title + artist, so we search Spotify for the seed, read its
+  // song-radio station directly (inspiredby-mix + the playlist reader, see
+  // scriptDirectTracks) — or, when that fails, open its "Go to song radio" page
+  // and scrape it — then play it. Reuses withSpotifyWindow (login flow + single-window gate +
   // generation guard) and scriptScrollThenScrape (the shared row parser).
 
   // Synthetic playlist id used to key the reused track-scrape messages for the
   // radio page (it isn't a real playlist).
   var RADIO_SCRAPE_ID = "radio-station";
 
-  // Resolve a station's tracklist: search the seed → open its "Go to song radio"
-  // page → scrape the rows. Resolves `{ tracks, seedId }` — `seedId` is the
+  // Resolve a station's tracklist: search the seed → read its station directly
+  // (fallback: open its "Go to song radio" page → scrape the rows). Resolves `{ tracks, seedId }` — `seedId` is the
   // Spotify id Spotify itself matched for the seed, which lets the caller
   // recognise the station's opening row (song radio always leads with the seed)
   // by id rather than by fuzzy title comparison.
@@ -3715,7 +4806,9 @@ function activate(api) {
     return withSpotifyWindow({ url: searchTracksUrl(query), visible: visible }, function (h, ctx) {
       return new Promise(function (resolve) {
         var gen = ctx.gen;
-        var phase = "search"; // search -> go-radio -> station -> scrape
+        // search -> direct, or on its failure search -> direct -> go-radio ->
+        // station -> scrape (the page path).
+        var phase = "search";
         var settled = false;
         var timer = null;
         var pumpTimer = null;
@@ -3759,6 +4852,17 @@ function activate(api) {
             done([]);
           }, ms);
         }
+        // The fallback: open the seed's track page, click "Go to song radio",
+        // wait for the station page and scrape it.
+        function startClickPath() {
+          if (settled || phase !== "direct") return;
+          phase = "go-radio";
+          h.eval(scriptNavigateTrackPage(seedId));
+          // The go-radio script waits for the track page itself, and the pump
+          // covers the window where the navigation is still in flight.
+          pump(scriptGoToRadio(gen, seedId), 3000, "go-radio");
+          armTimeout(45000, "go-radio");
+        }
 
         ctx.setHandler(function (msg) {
           if (ctx.isStale() || settled) return;
@@ -3774,12 +4878,36 @@ function activate(api) {
             }
             plog("info", "radio", "seed track: " + (msg.data.name || "?") + " — " + (msg.data.artist || "?"));
             seedId = msg.data.trackId;
-            phase = "go-radio";
-            h.eval(scriptNavigateTrackPage(msg.data.trackId));
-            // The go-radio script waits for the track page itself, and the pump
-            // covers the window where the navigation is still in flight.
-            pump(scriptGoToRadio(gen, seedId), 3000, "go-radio");
-            armTimeout(45000, "go-radio");
+            // Direct read first: the seed's station named by inspiredby-mix, read
+            // like a playlist. No track page, no menu clicks, no station page.
+            phase = "direct";
+            evalLogged(h, scriptDirectTracks(RADIO_SCRAPE_ID, seedId, gen, { kind: "radio" }), "radio");
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(function () {
+              plog("warn", "radio", "direct station read timeout — falling back to the page");
+              startClickPath();
+            }, 30000);
+            return;
+          }
+
+          if (msg.type === "tracks-direct-failed" && msg.data && msg.data.playlistId === RADIO_SCRAPE_ID) {
+            if (phase !== "direct") return;
+            plog("warn", "radio", "direct station read failed (" + msg.data.reason + ") — falling back to the page");
+            startClickPath();
+            return;
+          }
+
+          if (msg.type === "tracks" && msg.data && msg.data.playlistId === RADIO_SCRAPE_ID &&
+              msg.data.source === "direct" && phase === "direct") {
+            if (timer) { clearTimeout(timer); timer = null; }
+            var direct = msg.data.tracks || [];
+            if (direct.length === 0) {
+              plog("warn", "radio", "direct station read was empty — falling back to the page");
+              startClickPath();
+              return;
+            }
+            plog("info", "radio", "station " + (msg.data.stationId || "?") + ": " + direct.length + " tracks (direct)");
+            done(upgradeTrackImages(direct));
             return;
           }
 
@@ -3984,12 +5112,14 @@ function activate(api) {
     }
     ctx.setHandler(function (msg) {
       if (!pending || ctx.isStale()) return;
-      if (msg.type !== pending.type) return;
+      if (Array.isArray(pending.type) ? pending.type.indexOf(msg.type) === -1 : msg.type !== pending.type) return;
       var d = msg.data || {};
       if (d.gen != null && d.gen !== ctx.gen) return;
       if (pending.match && !pending.match(d)) return;
       var p = pending;
       clear();
+      // A step waiting on several types learns which one answered.
+      if (Array.isArray(p.type)) d.__type = msg.type;
       p.resolve(d);
     });
     return function step(script, type, opts) {
@@ -4021,10 +5151,75 @@ function activate(api) {
     });
   }
 
-  // Search one facet and resolve the candidate list. Navigates unless the
-  // window is already on that search (it was opened there and login didn't
-  // bounce it).
+  var directSeq = 0;
+
+  // h.eval for a direct script: a rejection (the page is navigating) is
+  // logged, never left unhandled; the caller's timer still decides.
+  function evalLogged(h, script, label) {
+    var p = h.eval(script);
+    if (p && typeof p.catch === "function") {
+      p.catch(function (e) { plog("info", label || "direct", "eval failed (page navigating?)", String(e)); });
+    }
+    return p;
+  }
+  // One Pathfinder query (scriptPathfinder) through the stepper. Resolves the
+  // response data; rejects when it failed, so the caller can fall back to its
+  // page path. `path` is where the page is nudged for a session token if the
+  // capture hasn't seen one (null: Search).
+  function directQuery(h, ctx, step, op, vars, path) {
+    var tag = "pf" + (++directSeq);
+    return step(scriptPathfinder(tag, ctx.gen, op, vars, path), "pathfinder", {
+      pump: false,
+      timeoutMs: 20000,
+      label: op,
+      match: function (d) { return d.tag === tag; },
+    }).then(function (d) {
+      if (d.error) throw new Error(d.error);
+      return d.data;
+    });
+  }
+
+  // A spclient GET (scriptSpclient) through the stepper. Resolves its JSON, or
+  // null when the route answered 404.
+  function directSpclient(h, ctx, step, spclientPath, headers, path) {
+    var tag = "sc" + (++directSeq);
+    return step(scriptSpclient(tag, ctx.gen, spclientPath, headers, path), "pathfinder", {
+      pump: false,
+      timeoutMs: 20000,
+      label: spclientPath.split("?")[0],
+      match: function (d) { return d.tag === tag; },
+    }).then(function (d) {
+      if (d.error) throw new Error(d.error);
+      return d.data;
+    });
+  }
+
+  // Search one facet and resolve the candidate list: directly (searchTracks /
+  // searchAlbums / searchArtists), else from the search page.
   function searchCandidates(h, ctx, step, query, facet) {
+    var op = SEARCH_OPS[facet];
+    return directQuery(h, ctx, step, op, searchVars(query, 30), null).then(function (data) {
+      var r = candidatesFromSearch(facet, data);
+      if (!r) throw new Error(op + ": unexpected response");
+      // An empty answer is what the page's "No songs found" was: a real miss,
+      // or search throttling after a burst (infoLookup counts these).
+      if (r.total === 0) lastSearchEmptyPage = true;
+      plog("info", "lookup", facet + " search \"" + query + "\": " + r.candidates.length + " candidates (direct)");
+      return r.candidates;
+    }).then(null, function (e) {
+      if (ctx.isStale()) throw e;
+      plog("warn", "lookup", facet + " search \"" + query + "\": direct read failed (" + ((e && e.message) || e) +
+        ") — falling back to the search page");
+      // Navigate even if the window opened on this search: the direct read
+      // may have moved the page in-app while looking for a session token.
+      ctx.loginUrl = null;
+      return pageSearchCandidates(h, ctx, step, query, facet);
+    });
+  }
+
+  // The search page path. Navigates unless the window is already on that
+  // search (it was opened there and login didn't bounce it).
+  function pageSearchCandidates(h, ctx, step, query, facet) {
     var url = searchUrl(query, facet);
     var here = ctx.loginUrl && ctx.loginUrl.indexOf(url.replace(SEARCH_BASE, "/search/")) !== -1;
     ctx.loginUrl = null; // only the first search can reuse the opening page
@@ -4081,12 +5276,25 @@ function activate(api) {
       }).then(function () {
         if (!found) return null;
         plog("info", "lookup", "album match: " + found.name + " (" + found.id + ")");
-        return openPage(h, ctx, step, "/album/" + found.id, true).then(function () {
-          return step(scriptScrollThenScrape(ALBUM_SCRAPE_ID, ctx.gen, { kind: "album", maxSteps: 40 }), "tracks", {
-            pump: false,
-            timeoutMs: 60000,
-            label: "album scrape",
-            match: function (d) { return d.playlistId === ALBUM_SCRAPE_ID; },
+        return step(scriptDirectTracks(ALBUM_SCRAPE_ID, found.id, ctx.gen, { kind: "album" }), ["tracks", "tracks-direct-failed"], {
+          pump: false,
+          timeoutMs: 30000,
+          label: "album read",
+          match: function (d) { return d.playlistId === ALBUM_SCRAPE_ID && (d.source === "direct" || d.reason !== undefined); },
+        }).then(function (d) {
+          if (d.__type !== "tracks") throw new Error(d.reason || "failed");
+          if (!(d.tracks || []).length) throw new Error("no tracks");
+          return d;
+        }).then(null, function (e) {
+          if (ctx.isStale()) throw e;
+          plog("warn", "lookup", "album read failed (" + ((e && e.message) || e) + ") — falling back to the album page");
+          return openPage(h, ctx, step, "/album/" + found.id, true).then(function () {
+            return step(scriptScrollThenScrape(ALBUM_SCRAPE_ID, ctx.gen, { kind: "album", maxSteps: 40 }), "tracks", {
+              pump: false,
+              timeoutMs: 60000,
+              label: "album scrape",
+              match: function (d) { return d.playlistId === ALBUM_SCRAPE_ID && d.source === undefined; },
+            });
           });
         }).then(function (d) {
           if (d.error) plog("warn", "lookup", "album scrape error: " + d.error);
@@ -4165,11 +5373,12 @@ function activate(api) {
 
   // ---- Track plays / artist monthly listeners ----
 
-  // Resolves the play count, or null when Spotify has no matching track (or
-  // shows no count for it — it hides counts under ~1,000 plays).
-  function lookupTrackPlays(title, artist) {
+  // The track-plays fallback: the search page, then the track page. Resolves
+  // the play count, or null when Spotify has no matching track (or shows no
+  // count for it — it hides counts under ~1,000 plays).
+  function lookupTrackPlaysPage(title, artist) {
     return spotifyFlow(searchUrl(title + " " + artist, "tracks"), { quiet: true }, function (h, ctx, step) {
-      return searchCandidates(h, ctx, step, title + " " + artist, "tracks").then(function (cands) {
+      return pageSearchCandidates(h, ctx, step, title + " " + artist, "tracks").then(function (cands) {
         var t = pickTrackCandidate(cands, title, artist, null);
         if (!t) return null;
         h.eval(scriptNavigateTo("/track/" + t.id));
@@ -4186,9 +5395,208 @@ function activate(api) {
     });
   }
 
-  function lookupArtistListeners(artist) {
+  // ---- Per-entity memory for the direct lookups ----
+  //
+  // An artist page asks for its monthly listeners, its Top Songs and its photo
+  // at once — three lookups that would each search Spotify and read the
+  // artist. They share two memos instead: which Spotify entity a name is (the
+  // pick: hours — that doesn't change) and what one read of it said (the
+  // facts: half an hour). A request both can answer is served without opening
+  // the window, the queue or the spacing.
+  var PICK_MEMO_MS = 6 * 60 * 60 * 1000;
+  var FACTS_MEMO_MS = 30 * 60 * 1000;
+  var MEMO_MAX = 300;
+  var memo = {}; // key -> { at, value }
+
+  function memoGet(key, maxAgeMs) {
+    var hit = memo[key];
+    return hit && Date.now() - hit.at < maxAgeMs ? hit.value : null;
+  }
+  function memoSet(key, value) {
+    memo[key] = { at: Date.now(), value: value };
+    var keys = Object.keys(memo);
+    if (keys.length <= MEMO_MAX) return;
+    keys.sort(function (x, y) { return memo[x].at - memo[y].at; });
+    for (var i = 0; i < keys.length - MEMO_MAX; i++) delete memo[keys[i]];
+  }
+  function artistPickKey(artist) { return "pick:artist:" + normalizeName(artist); }
+  function albumPickKey(album, artist) { return "pick:album:" + normalizeName(artist) + ":" + normalizeName(album); }
+  function lengthKey(durationSecs) { return durationSecs > 0 ? ":" + Math.round(durationSecs) : ""; }
+  function trackPickKey(title, artist, durationSecs) {
+    return "pick:track:" + normalizeName(artist) + ":" + normalizeName(title) + lengthKey(durationSecs);
+  }
+
+  // Which Spotify artist / album / track a name is. Only a match from the
+  // DIRECT search is remembered (fromDirectSearch): a search-page candidate
+  // carries no image or length, and remembering it would answer "no image"
+  // for hours after the direct search works again. A miss isn't remembered
+  // either: it may be search throttling.
+  function fromDirectSearch(c) {
+    return !!c && (Object.prototype.hasOwnProperty.call(c, "imageUrl") || Object.prototype.hasOwnProperty.call(c, "durationMs"));
+  }
+  function pickArtistOn(h, ctx, step, artist) {
+    var hit = memoGet(artistPickKey(artist), PICK_MEMO_MS);
+    if (hit) return Promise.resolve(hit);
+    return searchCandidates(h, ctx, step, artist, "artists").then(function (cands) {
+      var a = pickArtistCandidate(cands, artist);
+      if (fromDirectSearch(a)) memoSet(artistPickKey(artist), a);
+      return a;
+    });
+  }
+  function pickAlbumOn(h, ctx, step, album, artist) {
+    var hit = memoGet(albumPickKey(album, artist), PICK_MEMO_MS);
+    if (hit) return Promise.resolve(hit);
+    var q = artist ? artist + " " + album : album;
+    return searchCandidates(h, ctx, step, q, "albums").then(function (cands) {
+      var c = pickAlbumCandidate(cands, album, artist);
+      if (fromDirectSearch(c)) memoSet(albumPickKey(album, artist), c);
+      return c;
+    });
+  }
+
+  function pickTrackOn(h, ctx, step, title, artist, durationSecs) {
+    var key = trackPickKey(title, artist, durationSecs);
+    var hit = memoGet(key, PICK_MEMO_MS);
+    if (hit) return Promise.resolve(hit);
+    return searchCandidates(h, ctx, step, title + " " + artist, "tracks").then(function (cands) {
+      var t = pickTrackByLength(cands, title, artist, null, durationSecs);
+      if (fromDirectSearch(t)) memoSet(key, t);
+      return t;
+    });
+  }
+
+  // getTrack + the credits + the lyrics → everything a track page's Spotify
+  // sections read. A track page asks for them at once, so they are one read.
+  // Credits and lyrics are separate requests: when one fails, the rest still
+  // stand (creditsFailed / lyricsFailed tell that section to answer "error").
+  function trackFactsOn(h, ctx, step, t) {
+    var key = "facts:track:" + t.id;
+    var hit = memoGet(key, FACTS_MEMO_MS);
+    if (hit) return Promise.resolve(hit);
+    var facts = { trackId: t.id, plays: null, durationMs: t.durationMs || null, credits: null, creditsFailed: false,
+      lyrics: null, lyricsFailed: false };
+    return directQuery(h, ctx, step, "getTrack",
+      { uri: "spotify:track:" + t.id, includeVideoAssociationItems: false, includeMusicVideoPreviews: false },
+      "/track/" + t.id).then(function (data) {
+      if (!data || !data.trackUnion) throw new Error("getTrack: unexpected response");
+      facts.plays = playsFromTrack(data);
+      var dm = data.trackUnion.duration && data.trackUnion.duration.totalMilliseconds;
+      if (dm > 0) facts.durationMs = dm;
+      return directQuery(h, ctx, step, "queryTrackCreditsGroupedModal", { trackUri: "spotify:track:" + t.id }, "/track/" + t.id)
+        .then(function (cd) {
+          // No credits block is "no credits" (null → the tab hides), not a failure.
+          facts.credits = creditsFromTrack(cd);
+        }).then(null, function (e) {
+          if (ctx.isStale()) throw e;
+          plog("warn", "lookup", "track credits: " + ((e && e.message) || e));
+          facts.creditsFailed = true;
+        });
+    }).then(function () {
+      return directSpclient(h, ctx, step, "/color-lyrics/v2/track/" + encodeURIComponent(t.id) +
+        "?format=json&vocalRemoval=false&market=from_token", { "app-platform": "WebPlayer" }, "/track/" + t.id)
+        .then(function (json) {
+          facts.lyrics = lyricsFromColorLyrics(json);
+        }, function (e) {
+          if (ctx.isStale()) throw e;
+          plog("warn", "lookup", "track lyrics: " + ((e && e.message) || e));
+          facts.lyricsFailed = true;
+        });
+    }).then(function () {
+      // Remembered even when credits or lyrics failed: re-reading the whole
+      // track on every visit would cost a window each time. A failed part
+      // answers "error" until the memo expires (FACTS_MEMO_MS), then retries.
+      memoSet(key, facts);
+      return facts;
+    });
+  }
+
+  function memoTrackFacts(title, artist, durationSecs) {
+    var t = memoGet(trackPickKey(title, artist, durationSecs), PICK_MEMO_MS);
+    return t ? memoGet("facts:track:" + t.id, FACTS_MEMO_MS) : null;
+  }
+
+  // Throws when the direct read failed (plays then try the page); null = no
+  // such track on Spotify. durationSecs (the user's copy, when known) steers
+  // the pick toward the release with that length.
+  function lookupTrackFacts(title, artist, durationSecs) {
+    return spotifyFlow(searchUrl(title + " " + artist, "tracks"), { quiet: true }, function (h, ctx, step) {
+      return pickTrackOn(h, ctx, step, title, artist, durationSecs).then(function (t) {
+        if (!t) return null;
+        return trackFactsOn(h, ctx, step, t);
+      });
+    });
+  }
+
+  // One queryArtistOverview → everything the artist lookups read.
+  function artistFactsOn(h, ctx, step, a, artistName) {
+    var key = "facts:artist:" + a.id;
+    var hit = memoGet(key, FACTS_MEMO_MS);
+    if (hit) return Promise.resolve(hit);
+    return directQuery(h, ctx, step, "queryArtistOverview",
+      { uri: "spotify:artist:" + a.id, locale: "", preReleaseV2: false, includeMusicVideoPreviews: false },
+      "/artist/" + a.id).then(function (data) {
+      var facts = artistFactsFromOverview(data, artistName);
+      if (!facts) throw new Error("queryArtistOverview: unexpected response");
+      facts.artistId = a.id;
+      memoSet(key, facts);
+      return facts;
+    });
+  }
+
+  // getAlbum, every page (50 a page; 10 pages is a 500-track box set) → the
+  // album's tracks with their play counts, in album order.
+  function albumFactsOn(h, ctx, step, c, artistName) {
+    var key = "facts:album:" + c.id;
+    var hit = memoGet(key, FACTS_MEMO_MS);
+    if (hit) return Promise.resolve(hit);
+    var items = [];
+    var name = c.title;
+    function page(offset, n) {
+      return directQuery(h, ctx, step, "getAlbum",
+        { uri: "spotify:album:" + c.id, locale: "", offset: offset, limit: 50 }, "/album/" + c.id).then(function (data) {
+        var r = albumTracksFromAlbum(data, artistName);
+        if (!r) throw new Error("getAlbum: unexpected response");
+        if (r.name) name = r.name;
+        items = items.concat(r.items);
+        var got = offset + ((data.albumUnion.tracksV2.items || []).length);
+        if (got < r.total && got > offset && n < 10) return page(got, n + 1);
+      });
+    }
+    return page(0, 1).then(function () {
+      var facts = { albumId: c.id, name: name, items: items };
+      memoSet(key, facts);
+      return facts;
+    });
+  }
+
+  // Both memos, no window: what an earlier lookup already learned.
+  function memoArtistFacts(artist) {
+    var a = memoGet(artistPickKey(artist), PICK_MEMO_MS);
+    return a ? memoGet("facts:artist:" + a.id, FACTS_MEMO_MS) : null;
+  }
+  function memoAlbumFacts(album, artist) {
+    var c = memoGet(albumPickKey(album, artist), PICK_MEMO_MS);
+    return c ? memoGet("facts:album:" + c.id, FACTS_MEMO_MS) : null;
+  }
+
+  // Everything an artist page's Spotify sections show: pick + one overview.
+  // Every artist section asks through artistFacts, so the six sections an
+  // artist page opens share one window — infoLookup de-duplicates by key while
+  // the read runs, and the memo serves every ask after it. Throws when the
+  // direct read failed (listeners then try the page); null = no such artist.
+  function lookupArtistFacts(artist) {
     return spotifyFlow(searchUrl(artist, "artists"), { quiet: true }, function (h, ctx, step) {
-      return searchCandidates(h, ctx, step, artist, "artists").then(function (cands) {
+      return pickArtistOn(h, ctx, step, artist).then(function (a) {
+        if (!a) return null;
+        return artistFactsOn(h, ctx, step, a, artist);
+      });
+    });
+  }
+
+  // The monthly-listeners fallback: the search page, then the artist page.
+  function lookupArtistListenersPage(artist) {
+    return spotifyFlow(searchUrl(artist, "artists"), { quiet: true }, function (h, ctx, step) {
+      return pageSearchCandidates(h, ctx, step, artist, "artists").then(function (cands) {
         var a = pickArtistCandidate(cands, artist);
         if (!a) return null;
         h.eval(scriptNavigateTo("/artist/" + a.id));
@@ -4200,6 +5608,18 @@ function activate(api) {
           if (d.error) throw new Error(d.error);
           var n = d.missing ? null : pickListenerCount(d.texts);
           return n == null ? null : { listeners: n, artistId: a.id };
+        });
+      });
+    });
+  }
+
+  function lookupAlbumTracks(album, artist) {
+    var q = artist ? artist + " " + album : album;
+    return spotifyFlow(searchUrl(q, "albums"), { quiet: true }, function (h, ctx, step) {
+      return pickAlbumOn(h, ctx, step, album, artist).then(function (c) {
+        if (!c) return null;
+        return albumFactsOn(h, ctx, step, c, artist).then(function (f) {
+          return f.items.length ? { items: f.items, albumId: c.id } : null;
         });
       });
     });
@@ -4247,16 +5667,23 @@ function activate(api) {
     });
   }
 
-  function infoLookup(key, run) {
+  // opts.deadlineMs: give up (as "Spotify is busy") if the lookup can't START
+  // within that long — for callers that stop listening (the host's image
+  // chain waits 20s), so a queued lookup never opens a window for nobody.
+  var BUSY = "Spotify is busy";
+  function infoLookup(key, run, opts) {
     if (signedOutUntil > Date.now()) return Promise.resolve({ status: "error", message: SIGNED_OUT });
     if (throttledUntil > Date.now()) return Promise.resolve({ status: "error", message: THROTTLED });
     if (infoInFlight[key]) return infoInFlight[key];
+    var deadline = opts && opts.deadlineMs ? Date.now() + opts.deadlineMs : 0;
     var p = infoQueue.then(function () {
       if (signedOutUntil > Date.now()) throw new Error(SIGNED_OUT);
       if (throttledUntil > Date.now()) throw new Error(THROTTLED);
+      if (deadline && Date.now() > deadline) throw new Error(BUSY);
       return waitMs(lastInfoLookupAt + INFO_MIN_SPACING_MS - Date.now());
     }).then(function () {
-      return waitForFreeWindow(INFO_WAIT_FOR_WINDOW_MS);
+      if (deadline && Date.now() > deadline) throw new Error(BUSY);
+      return waitForFreeWindow(deadline ? Math.max(0, deadline - Date.now()) : INFO_WAIT_FOR_WINDOW_MS);
     }).then(function () {
       lastSearchEmptyPage = false;
       return run();
@@ -4270,10 +5697,12 @@ function activate(api) {
       }
       return value ? { status: "ok", value: value } : { status: "not_found" };
     }, function (e) {
-      lastInfoLookupAt = Date.now();
       var m = (e && e.message) || String(e);
+      // A lookup that never started (busy past its deadline, signed out,
+      // throttled) used no window, so it doesn't push the next one back.
+      if (m !== BUSY && m !== SIGNED_OUT && m !== THROTTLED) lastInfoLookupAt = Date.now();
       if (m === SIGNED_OUT) signedOutUntil = Date.now() + 10 * 60 * 1000;
-      plog("warn", "lookup", key + ": " + m);
+      plog(m === BUSY ? "info" : "warn", "lookup", key + ": " + m);
       return { status: "error", message: m };
     });
     infoQueue = p.then(function () { return null; });
@@ -4285,14 +5714,56 @@ function activate(api) {
   // Raw, de-duplicated lookups shared by the info sections and the assistant
   // tools. Resolve { status: "ok", value: {plays, trackId} | {listeners,
   // artistId} } | { status: "not_found" } | { status: "error", message }.
-  function trackPlaysLookup(title, artist) {
-    return infoLookup("plays:" + normalizeName(artist) + ":" + normalizeName(title), function () {
-      return lookupTrackPlays(title, artist);
+  // { status: "ok", value: facts } | not_found | error. Plays and credits both
+  // ask here, so a track page's two sections share one read.
+  function trackFactsLookup(title, artist, durationSecs) {
+    var dur = durationSecs > 0 ? durationSecs : null;
+    var f = memoTrackFacts(title, artist, dur);
+    if (f) return Promise.resolve({ status: "ok", value: f });
+    return infoLookup("track:" + normalizeName(artist) + ":" + normalizeName(title) + lengthKey(dur), function () {
+      return lookupTrackFacts(title, artist, dur);
+    });
+  }
+  function trackPlaysLookup(title, artist, durationSecs) {
+    return trackFactsLookup(title, artist, durationSecs).then(function (r) {
+      if (r.status === "ok") {
+        return r.value.plays != null ? { status: "ok", value: { plays: r.value.plays, trackId: r.value.trackId } } : { status: "not_found" };
+      }
+      if (r.status !== "error" || r.message === SIGNED_OUT || r.message === THROTTLED || r.message === BUSY) return r;
+      plog("warn", "lookup", "track plays: direct read failed (" + r.message + ") — falling back to the track page");
+      return infoLookup("plays-page:" + normalizeName(artist) + ":" + normalizeName(title), function () {
+        return lookupTrackPlaysPage(title, artist);
+      });
+    });
+  }
+  // { status: "ok", value: facts } | not_found | error (the direct read failed).
+  function artistFactsLookup(artist) {
+    var f = memoArtistFacts(artist);
+    if (f) return Promise.resolve({ status: "ok", value: f });
+    return infoLookup("artist:" + normalizeName(artist), function () {
+      return lookupArtistFacts(artist);
     });
   }
   function artistListenersLookup(artist) {
-    return infoLookup("listeners:" + normalizeName(artist), function () {
-      return lookupArtistListeners(artist);
+    return artistFactsLookup(artist).then(function (r) {
+      if (r.status === "ok") {
+        return r.value.listeners != null
+          ? { status: "ok", value: { listeners: r.value.listeners, artistId: r.value.artistId } }
+          : { status: "not_found" };
+      }
+      // Throttled / signed out / busy: the page can't do better.
+      if (r.status !== "error" || r.message === SIGNED_OUT || r.message === THROTTLED || r.message === BUSY) return r;
+      plog("warn", "lookup", "monthly listeners: direct read failed (" + r.message + ") — falling back to the artist page");
+      return infoLookup("listeners-page:" + normalizeName(artist), function () {
+        return lookupArtistListenersPage(artist);
+      });
+    });
+  }
+  function albumTracksLookup(album, artist) {
+    var f = memoAlbumFacts(album, artist);
+    if (f) return Promise.resolve(f.items.length ? { status: "ok", value: { items: f.items, albumId: f.albumId } } : { status: "not_found" });
+    return infoLookup("albumtracks:" + normalizeName(artist) + ":" + normalizeName(album), function () {
+      return lookupAlbumTracks(album, artist);
     });
   }
 
@@ -4301,10 +5772,77 @@ function activate(api) {
       if (!entity || entity.kind !== "track" || !entity.name || !entity.artistName) {
         return Promise.resolve({ status: "not_found" });
       }
-      return trackPlaysLookup(entity.name, entity.artistName).then(function (r) {
+      return trackPlaysLookup(entity.name, entity.artistName, entity.durationSecs).then(function (r) {
         if (r.status !== "ok") return r;
         var url = "https://open.spotify.com/track/" + r.value.trackId;
         return { status: "ok", value: { items: [{ label: "Spotify plays", value: r.value.plays }], url: url, _meta: { url: url, providerName: "Spotify" } } };
+      });
+    });
+
+    // Spotify as a second source of Last.fm's ranked lists (same type ids, so
+    // the user orders the two in Settings → Providers): Spotify's values are
+    // all-time plays, not listeners.
+    api.informationTypes.onFetch("spotify_track_credits", function (entity) {
+      if (!entity || entity.kind !== "track" || !entity.name || !entity.artistName) return Promise.resolve({ status: "not_found" });
+      return trackFactsLookup(entity.name, entity.artistName, entity.durationSecs).then(function (r) {
+        if (r.status !== "ok") return r;
+        if (r.value.creditsFailed) return { status: "error", message: "Spotify's credits didn't load" };
+        var value = creditsSection(r.value.credits);
+        if (!value) return { status: "not_found" };
+        var url = "https://open.spotify.com/track/" + r.value.trackId;
+        value._meta = { url: url, providerName: "Spotify" };
+        return { status: "ok", value: value };
+      });
+    });
+
+    // Lyrics (a third source in the lyrics chain, after the user's files,
+    // LRCLIB and Lyrics.ovh by default): synced only when Spotify's cut has the
+    // user's length (sameLength), else the words alone — see lyricsValue.
+    api.informationTypes.onFetch("lyrics", function (entity) {
+      if (!entity || entity.kind !== "track" || !entity.name || !entity.artistName) return Promise.resolve({ status: "not_found" });
+      var dur = typeof entity.durationSecs === "number" && entity.durationSecs > 0 ? entity.durationSecs : null;
+      return trackFactsLookup(entity.name, entity.artistName, dur).then(function (r) {
+        if (r.status !== "ok") return r;
+        var f = r.value;
+        if (f.lyricsFailed) return { status: "error", message: "Spotify's lyrics didn't load" };
+        var value = lyricsValue(f.lyrics, sameLength(f.durationMs, dur));
+        if (!value) return { status: "not_found" };
+        var url = "https://open.spotify.com/track/" + f.trackId;
+        value._meta = { url: url, providerName: "Spotify" + (f.lyrics.provider ? " (" + f.lyrics.provider + ")" : "") };
+        return { status: "ok", value: value };
+      });
+    });
+
+    // Every artist section is a view of the same facts (artistFactsLookup).
+    var artistSection = function (typeId, select) {
+      api.informationTypes.onFetch(typeId, function (entity) {
+        if (!entity || entity.kind !== "artist" || !entity.name) return Promise.resolve({ status: "not_found" });
+        return artistFactsLookup(entity.name).then(function (r) {
+          if (r.status !== "ok") return r;
+          var value = select(r.value, entity.name);
+          if (!value) return { status: "not_found" };
+          var url = "https://open.spotify.com/artist/" + r.value.artistId;
+          value._meta = { url: url, providerName: "Spotify" };
+          return { status: "ok", value: value };
+        });
+      });
+    };
+    artistSection("artist_top_tracks", function (f) { return f.topTracks.length ? { items: f.topTracks } : null; });
+    // Second source of Last.fm's About and Similar Artists (same ids).
+    artistSection("artist_bio", bioSection);
+    artistSection("similar_artists", relatedSection);
+    // Spotify's own.
+    artistSection("spotify_artist_stats", statsSection);
+    artistSection("spotify_artist_photos", photosSection);
+    artistSection("spotify_concerts", concertsSection);
+
+    api.informationTypes.onFetch("album_track_popularity", function (entity) {
+      // Without an artist nothing confirms which album it is.
+      if (!entity || entity.kind !== "album" || !entity.name || !entity.artistName) return Promise.resolve({ status: "not_found" });
+      return albumTracksLookup(entity.name, entity.artistName).then(function (r) {
+        if (r.status !== "ok") return r;
+        var url = "https://open.spotify.com/album/" + r.value.albumId;
+        return { status: "ok", value: { items: r.value.items, _meta: { url: url, providerName: "Spotify" } } };
       });
     });
 
@@ -4317,6 +5855,65 @@ function activate(api) {
         var url = "https://open.spotify.com/artist/" + r.value.artistId;
         return { status: "ok", value: { items: [{ label: "monthly listeners on Spotify", value: r.value.listeners }], url: url, _meta: { url: url, providerName: "Spotify" } } };
       });
+    });
+  }
+
+  // ---- Image providers (artist photo, album cover) ----
+  //
+  // One direct search each: Spotify's search results already carry the 640px
+  // artist photo / album cover, so the provider is search → pick → answer
+  // with its URL (the host downloads and stores it). The same pickers as the
+  // lookups — an artist must be the artist by name, an album must be by the
+  // artist — because a wrong picture is worse than none: the host keeps the
+  // first answer it gets. Placeholder names ("[Unknown Album]") never reach
+  // a plugin; the host skips them.
+  //
+  // The host asks one entity at a time and waits 20s per provider, so these
+  // lookups carry a deadline: one still queued behind other Spotify work when
+  // that's nearly up answers "busy" (the host moves on to the next provider)
+  // instead of opening a window after the host stopped listening.
+  var IMAGE_LOOKUP_DEADLINE_MS = 12000;
+
+  function lookupArtistImage(artist) {
+    return spotifyFlow(searchUrl(artist, "artists"), { quiet: true }, function (h, ctx, step) {
+      return pickArtistOn(h, ctx, step, artist).then(function (a) {
+        return a && a.imageUrl ? { url: a.imageUrl, artistId: a.id } : null;
+      });
+    });
+  }
+
+  function lookupAlbumCover(album, artist) {
+    var q = artist ? artist + " " + album : album;
+    return spotifyFlow(searchUrl(q, "albums"), { quiet: true }, function (h, ctx, step) {
+      return pickAlbumOn(h, ctx, step, album, artist).then(function (c) {
+        return c && c.imageUrl ? { url: c.imageUrl, albumId: c.id } : null;
+      });
+    });
+  }
+
+  function imageAnswer(r) {
+    if (r.status !== "ok") return r;
+    return { status: "ok", url: r.value.url };
+  }
+
+  if (api.imageProviders && typeof api.imageProviders.onFetch === "function") {
+    api.imageProviders.onFetch("artist", function (name) {
+      if (!name) return Promise.resolve({ status: "not_found" });
+      // An earlier lookup (the artist page's listeners, say) already knows.
+      var known = memoGet(artistPickKey(name), PICK_MEMO_MS);
+      if (known && known.imageUrl) return Promise.resolve({ status: "ok", url: known.imageUrl });
+      return infoLookup("image:artist:" + normalizeName(name), function () {
+        return lookupArtistImage(name);
+      }, { deadlineMs: IMAGE_LOOKUP_DEADLINE_MS }).then(imageAnswer);
+    });
+    api.imageProviders.onFetch("album", function (name, artistName) {
+      // Without an artist the pick has nothing to confirm the album by.
+      if (!name || !artistName) return Promise.resolve({ status: "not_found" });
+      var known = memoGet(albumPickKey(name, artistName), PICK_MEMO_MS);
+      if (known && known.imageUrl) return Promise.resolve({ status: "ok", url: known.imageUrl });
+      return infoLookup("image:album:" + normalizeName(artistName) + ":" + normalizeName(name), function () {
+        return lookupAlbumCover(name, artistName);
+      }, { deadlineMs: IMAGE_LOOKUP_DEADLINE_MS }).then(imageAnswer);
     });
   }
 
@@ -4354,7 +5951,7 @@ function activate(api) {
     return withSpotifyWindow({ url: searchTracksUrl(query), visible: visible }, function (h, ctx) {
       return new Promise(function (resolve) {
         var gen = ctx.gen;
-        var phase = "ready"; // ready -> scrape
+        var phase = "direct"; // direct, or on its failure: ready -> scrape
         var settled = false;
         var timer = null;
         var pumpTimer = null;
@@ -4391,9 +5988,11 @@ function activate(api) {
           }, ms);
         }
 
+        var directHandler = null;
         ctx.setHandler(function (msg) {
           if (ctx.isStale() || settled) return;
           if (msg.data && msg.data.gen != null && msg.data.gen !== gen) return;
+          if (directHandler && directHandler(msg)) return;
 
           // Gate: results have rendered (the page paints placeholder rows first,
           // which the row parser would otherwise accept as content).
@@ -4419,14 +6018,39 @@ function activate(api) {
           }
         });
 
-        // The window opened AT the search URL; only re-navigate when login
-        // bounced the page elsewhere (same reasoning as the radio flow).
-        if (!ctx.loginUrl || ctx.loginUrl.indexOf("/search/") === -1) {
-          plog("info", "search", "not on the search page, navigating", { at: ctx.loginUrl });
+        // The page path: wait for the results to render, then scrape them.
+        function startPagePath() {
+          if (settled || phase !== "direct") return;
+          phase = "ready";
+          // Navigate even though the window opened AT the search URL: the
+          // direct read may have moved the page in-app for a session token.
           h.eval(scriptNavigateSearch(query));
+          pump(scriptWaitForSearchResults(gen));
+          armTimeout(45000, "results wait");
         }
-        pump(scriptWaitForSearchResults(gen));
-        armTimeout(45000, "results wait");
+
+        // Direct first (searchTracks); the page path is the fallback.
+        var directTag = "search-" + gen;
+        evalLogged(h, scriptPathfinder(directTag, gen, "searchTracks", searchVars(query, SEARCH_MAX_RESULTS), null), "search");
+        timer = setTimeout(function () {
+          plog("warn", "search", "direct search timeout for “" + query + "” — falling back to the page");
+          startPagePath();
+        }, 20000);
+        directHandler = function (msg) {
+          if (msg.type !== "pathfinder" || !msg.data || msg.data.tag !== directTag) return false;
+          if (phase !== "direct") return true;
+          if (timer) { clearTimeout(timer); timer = null; }
+          var rows = msg.data.error ? null : tracksFromSearch(msg.data.data);
+          if (!rows) {
+            plog("warn", "search", "direct search failed for “" + query + "” (" + (msg.data.error || "unexpected response") +
+              ") — falling back to the page");
+            startPagePath();
+            return true;
+          }
+          plog("info", "search", "“" + query + "”: " + rows.length + " rows (direct)");
+          done(rows);
+          return true;
+        };
       });
     });
   }
@@ -4742,17 +6366,46 @@ function activate(api) {
         function arm() {
           if (stallTimer) clearTimeout(stallTimer);
           stallTimer = setTimeout(function () {
+            if (!scraping) {
+              plog("warn", "liked", "Direct read of Liked Songs went quiet — falling back to the page scrape");
+              startScrape();
+              return;
+            }
             settle(reject, new Error("Timed out reading Liked Songs (no progress for " + Math.round(LIKED_STALL_MS / 1000) + "s)"));
           }, LIKED_STALL_MS);
+        }
+
+        // The page scrape, used when the direct read fails.
+        var scraping = false;
+        function startScrape() {
+          if (scraping || settled) return;
+          scraping = true;
+          lastCount = -1;
+          h.eval(scriptNavigatePlaylist(LIKED_SONGS_ID, "collection"));
+          setTimeout(function () {
+            if (ctx.isStale() || state.likedImportCancelled) { settle(reject, new Error("Cancelled")); return; }
+            h.eval(scriptScrollThenScrape(LIKED_SONGS_ID, gen, { maxSteps: LIKED_MAX_STEPS, kind: "collection" }));
+            arm();
+          }, 4000);
         }
 
         ctx.setHandler(function (msg) {
           if (!msg.data || msg.data.playlistId !== LIKED_SONGS_ID) return;
           if (msg.data.gen !== undefined && msg.data.gen !== gen) return;
-          // Cancel checks ride the progress ticks (every scroll step), so a
-          // cancel lands within ~a second; a page that stopped ticking is
+          // Cancel checks ride the progress ticks (every scroll step / page), so
+          // a cancel lands within ~a second; a page that stopped ticking is
           // resolved by the stall timer instead.
           if (state.likedImportCancelled) { settle(reject, new Error("Cancelled")); return; }
+          if (msg.type === "tracks-direct-failed") {
+            if (scraping) return;
+            plog("warn", "liked", "Direct read of Liked Songs failed (" + msg.data.reason +
+              ") — falling back to the page scrape");
+            startScrape();
+            return;
+          }
+          // Once the scrape has taken over, the direct read's late progress must
+          // not move the progress line around (a late complete answer is fine).
+          if (scraping && msg.type === "tracks-progress" && msg.data.source === "direct") return;
           if (msg.type === "tracks-progress") {
             var found = msg.data.found || 0;
             var total = msg.data.total || 0;
@@ -4770,16 +6423,21 @@ function activate(api) {
               settle(reject, new Error("Couldn't read Liked Songs: " + msg.data.error));
               return;
             }
+            if (msg.data.truncated) {
+              var got = (msg.data.tracks || []).length;
+              plog("warn", "liked", "Liked Songs read stopped at " + got + " of " + msg.data.total + " tracks");
+              api.ui.showNotification("Only the newest " + got + " of your " + msg.data.total +
+                " Liked Songs could be read — the rest weren't imported.", { kind: "warning" });
+            }
             settle(resolve, msg.data.tracks || []);
           }
         });
 
-        h.eval(scriptNavigatePlaylist(LIKED_SONGS_ID, "collection"));
-        setTimeout(function () {
-          if (ctx.isStale() || state.likedImportCancelled) { settle(reject, new Error("Cancelled")); return; }
-          h.eval(scriptScrollThenScrape(LIKED_SONGS_ID, gen, { maxSteps: LIKED_MAX_STEPS, kind: "collection" }));
-          arm();
-        }, 4000);
+        // Direct read first; the stall timer covers a direct read that goes
+        // quiet (its pages tick progress like the scroll steps do), and on
+        // expiry hands over to the scrape instead of failing the import.
+        evalLogged(h, scriptDirectTracks(LIKED_SONGS_ID, null, gen, { kind: "collection" }), "liked");
+        arm();
       });
     });
   }

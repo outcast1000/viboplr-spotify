@@ -10,6 +10,34 @@ Plugin id: `spotify-browse` (installed from the Viboplr plugin gallery).
 New to writing Viboplr plugins? See **[DEVELOPING.md](DEVELOPING.md)** for the
 develop/reload/debug workflow.
 
+## Spotify's private web-player API
+
+Tracklists (playlists, albums, Liked Songs) and song-radio stations are read
+straight from the endpoints the Spotify web player itself calls, from inside the
+signed-in browse window — the page scrape is the fallback (SPEC.md "On-demand
+track fetch"). The map of those endpoints comes from
+**[SpotAPI](https://github.com/Aran404/SpotAPI)** (Python, GPL-3.0), which
+documents them in code:
+
+- `spotapi/operations.py` — every Pathfinder GraphQL operation name
+  (`api-partner.spotify.com/pathfinder/v2/query`, persisted queries by sha256).
+- `spotapi/_protocol/routes.py` — the spclient REST routes (`color-lyrics`,
+  `inspiredby-mix`, `playlistextender`, `canvaz-cache`, `playlist/v2`,
+  `connect-state`, …).
+- `spotapi/session.py` + `spotapi/_protocol/totp.py` — how a client without a
+  browser gets a token (TOTP secret from the web-player bundle → `/api/token` →
+  `clienttoken`). We don't need this: the page already holds a token, which we
+  copy from its own requests.
+- `spotapi/_protocol/bundles.py` — the `"<op>","query","<sha256>"` pattern for
+  finding persisted-query hashes in the web-player JS.
+
+**Use it as a reference only — don't copy code.** SpotAPI is GPL-3.0; this
+plugin reimplements what it needs. These endpoints are undocumented and
+unauthorised by Spotify: they can change with any web-player release, which is
+why every direct read has a page-scrape fallback and `npm run verify:direct` /
+`verify:all` check them live. Read-only use so far; writing to the account
+(likes, playlists, follows) would be a separate, opt-in decision.
+
 ## Install
 
 In Viboplr: **Extensions → Install from URL** and paste this repo's URL, or it

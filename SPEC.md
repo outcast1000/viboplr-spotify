@@ -42,8 +42,10 @@ tracks through Viboplr's fallback resolution.
 
 - **State** — single `state` object holding all UI and data state; persisted across sessions via `api.storage`
 - **Scraper** — opens the Music home page in a browse window, injects JS scripts
-  to check login, scrape all shelves (`SCRIPT_SCRAPE_SHELVES`), and lazily scroll
-  + scrape one playlist's tracks on demand (`scriptScrollThenScrape`). The shared
+  to check login, scrape all shelves (`SCRIPT_SCRAPE_SHELVES`), and lazily read
+  one playlist's tracks on demand — directly from the web player's own GraphQL
+  endpoint (`scriptDirectTracks`), falling back to scrolling + scraping the page
+  (`scriptScrollThenScrape`). The shared
   `withSpotifyWindow(opts, fn)` helper centralizes the open + login-poll + banner
   flow for both the list sync (`syncPlaylists`) and the lazy track fetch (`ensureTracks`).
 - **Renderer** — builds plugin view data (toolbar, stacked shelf sections, card
@@ -158,7 +160,26 @@ failed. Manual syncs show none of these — their status lives in the toolbar.
 4. If `positive && !negative` → logged in, proceed
 5. If still not logged in after a short grace period (~2 polls), the window is surfaced (`handle.show()`), a sign-in banner is injected (`SCRIPT_LOGIN_BANNER`), and a notification is shown. Polling then continues **indefinitely** — when the user logs in, the banner is removed (`SCRIPT_REMOVE_LOGIN_BANNER`), a headless window is re-hidden, and scraping proceeds; if the user closes the window first, the scrape aborts. This applies to both user-initiated Sync and silent auto-refresh.
 
-### Phase 2: Single-page shelf scrape (`syncPlaylists`)
+### Phase 2: Home shelves (`syncPlaylists`)
+
+**Direct first.** `scriptPathfinder(…, "home", homeVars(), …, { pageAnswerMs })`
+reads the music-chip home through Pathfinder (`home`: `facet: "music-chip"`,
+`sectionItemsLimit: 10`, the page's `timeZone` / `sp_t` filled in the page).
+When the request capture kept the page's **own** `home` answer (it does when it
+was installed before the page asked), that answer is used instead of a second
+request — Spotify's home **varies between requests** (seen live: two calls
+seconds apart differed by two shelves). `shelvesFromHome` turns it into the
+shelf shape the scrape posts, **named the way the page heads them**, because Home
+shelves are registered by section name: a "More like X" / "Discover more from
+X" section is named after its header artist ("X"; two with one name merge, as
+they do in the scrape), the untitled top grid (`HomeShortsSectionData`) is
+"Home", and the single-card feed (`HomeFeedBaselineSectionData`) is skipped.
+Playlists always, albums with "Include albums", never artists or unnamed items.
+~4s for a whole Sync (the scrape: ~11s of scrolling alone). A failure, no
+shelves or 20s without an answer falls back to the scrape below — which then
+always re-navigates when the direct read moved the page for a token.
+
+**Fallback — the single-page shelf scrape:**
 1. Navigate to `open.spotify.com/home?facet=music-chip` (the window opened there
    already; the URL is re-asserted in case login redirected away).
 2. Wait ~4s for the SPA to render, then inject `SCRIPT_SCRAPE_SHELVES`.
@@ -179,9 +200,31 @@ failed. Manual syncs show none of these — their status lives in the toolbar.
 A playlist's tracks are scraped only when the user **views, plays, or enqueues**
 it (or clicks "Refresh tracks"):
 1. If cached tracks are fresh (within the 24h TTL) they are returned immediately.
-2. Otherwise open a browse window, navigate to `/playlist/{id}`, wait 4s, inject
+2. Otherwise open a browse window and, once signed in, inject
+   `scriptDirectTracks(playlistId, entityId, gen, { kind })` — the **direct
+   read**. It pages the list through `api-partner.spotify.com/pathfinder/v2/query`
+   the way the web player does (`fetchPlaylist` → `fetchPlaylistContents`,
+   `getAlbum`, `fetchLibraryTracks`; 100 per page, 50 for albums, at most
+   `DIRECT_MAX_ITEMS` = 10 000 — Spotify's own playlist limit — and for Liked
+   Songs, which has none, `DIRECT_MAX_LIKED` = 100 000 as a safety stop only;
+   a read that stops short of the list's total says so with `truncated`, and
+   the Liked Songs import then tells the user how many it imported), with the
+   page's own session headers, which a
+   fetch wrapper copies from the page's next request (an in-app
+   `pushState` + `popstate` navigation to the entity triggers one without a
+   reload). Persisted-query hashes are taken from the page's requests, else
+   read out of the web player's cached JS chunks (`"<op>","query","<sha256>"`).
+   It posts the same `tracks-progress` / `tracks` messages as the scrape, with
+   `source: "direct"`; the cover and description come from the response.
+   Duplicates collapse by Spotify id, as in the scrape. Measured 2026-11-22: 990
+   Liked Songs in 3–4s (the scrape: 48s), a 150-track playlist in ~1s.
+   Any failure posts `tracks-direct-failed { reason }`, and the plugin logs it
+   and falls back to steps 3–4; a direct read that times out (45s with no new
+   page) does the same. The Liked Songs import (`scrapeLikedSongs`) follows the
+   same order. `npm run verify:direct` checks both paths live.
+3. **Fallback:** navigate to `/playlist/{id}`, wait 4s, inject
    `scriptScrollThenScrape(playlistId, gen)`.
-3. Auto-scroll to load all tracks; scope to `[data-testid="playlist-tracklist"]`
+   Auto-scroll to load all tracks; scope to `[data-testid="playlist-tracklist"]`
    or `<main>` to avoid the sidebar; parse each `[role="row"]` for track name,
    artist(s), album, duration (the last grid cell's `m:ss`), image. The grid's
    `aria-rowcount` (rows + 1 header) is the list length: the scroll stops as
@@ -212,7 +255,17 @@ small state machine driven by the message bridge:
    already loading; it is only re-navigated when login bounced it elsewhere
    (`ctx.loginUrl`). `scriptSearchTopTrack` takes the first track row's Spotify
    id (`radio-seed`).
-2. **go-radio** — navigate to `/track/{id}`, inject `scriptGoToRadio` which
+   **Then the direct read** (`scriptDirectTracks(…, seedId, gen, { kind: "radio" })`):
+   `GET spclient.wg.spotify.com/inspiredby-mix/v2/seed_to_playlist/spotify:track:{id}?response-format=json`
+   names the seed's station (`mediaItems[].uri` = `spotify:playlist:37i9dQZF1E8…`,
+   the same playlist the "Go to song radio" click opens — checked live), which
+   is then read like any playlist (see "On-demand track fetch"). About 1s instead
+   of steps 2–4. The station opens with the seed, which `stripSeedRow` drops by
+   id. A failure (`tracks-direct-failed`), an empty station or 30s without an
+   answer falls back to steps 2–4. Note the click path calls `inspiredby-mix`
+   itself, so the fallback covers our read breaking (a hash or response shape),
+   not that service being down.
+2. **go-radio** (fallback) — navigate to `/track/{id}`, inject `scriptGoToRadio` which
    clicks the `…` more menu's "Go to song radio" item (`radio-go`). That click
    navigates to the radio tracklist page.
 3. **station** — `scriptWaitForStation` waits until the page has actually left
@@ -288,6 +341,14 @@ item isn't found. Run it with `VERIFY_DEBUG=1` to surface the injected scripts'
 
 ### Song search (`scrapeSearchTracks`)
 
+**Direct first:** `searchTracks` (50 results) through `scriptPathfinder`,
+mapped by `tracksFromSearch` to the row shape below — ~2s from the Cmd+K
+provider including the window. A failure or 20s without an answer falls back
+to the page path described here (navigating to the search URL again, since the
+direct read may have moved the page).
+
+**Fallback — the search page:**
+
 Spotify's `/search/{q}/tracks` page is a plain tracklist — the same
 `[role="row"]` markup the playlist pages use, which the radio flow already
 parses to pick its seed — so the rows are read by the shared
@@ -334,6 +395,18 @@ against the live DOM by `npm run verify:search`, which also fails when most rows
 come back without an artist or a Spotify id (selector drift).
 
 ### Catalog lookups — album tracklist, plays, monthly listeners
+
+**Direct first, at every step.** The search is `searchTracks` / `searchAlbums`
+/ `searchArtists` (`directQuery` → `candidatesFromSearch`, which yields
+`scriptSearchCandidates`' candidate shape, so the same pickers choose); the read
+is `getTrack` → `playsFromTrack`, `queryArtistOverview` → `listenersFromOverview`
+(`stats.monthlyListeners`, exact), or `scriptDirectTracks` kind `album`. Each
+step falls back on its own to the page step below (navigating, since a direct
+read may have moved the page). An empty direct search counts as Spotify's "no
+results" page did for the throttle pause. The pacing below is kept as is,
+although it was set for page searches.
+
+**Fallback — the pages:**
 
 Three features share one shape: **search → pick an entity → open its page →
 read one thing**, driven through a single browse window by `makeStepper`
@@ -396,6 +469,141 @@ These run in the **background** whenever a detail page opens, so:
   pause for 10 minutes (`throttledUntil`). They fire on every detail page, and
   a throttled Spotify search would also break the user's own search and radio.
   The user-initiated album action is not paced.
+
+### Top Songs and Track Popularity (ranked lists)
+
+Spotify is a **second source of Last.fm's two ranked lists**: the manifest
+declares `artist_top_tracks` and `album_track_popularity` under Last.fm's own
+type ids, so the host groups them into one chain per type and the user orders
+Last.fm and Spotify in Settings → Providers (a new provider lands after the
+existing one, so Last.fm stays first until the user moves it). The artist and
+album pages read the first provider that answers: Top Songs (a non-library
+artist's tracks, the "not in library" rows, the popularity bars) and an album's
+tracklist + bars. Items are Last.fm's shape — `{ name, value, libraryKind:
+"track" }`, plus `subtitle` only when a track's credit isn't just the page's
+artist (`rankedTrackItem`) — and the values are **all-time Spotify plays**, not
+listeners (the lists show no unit, just the number and a relative bar).
+`topTracksFromOverview` reads `queryArtistOverview`'s `discography.topTracks`
+(10, Spotify's order); `albumTracksFromAlbum` reads `getAlbum` (every page,
+album order). No page fallback: the pages show no play counts the scrapers
+read, so a failed read answers "error" and the next provider answers.
+
+**Per-entity memory.** An artist page asks for listeners, Top Songs and the
+photo at once. They share two memos (`memoGet` / `memoSet`, at most 300
+entries, oldest dropped): the **pick** — which Spotify artist / album a name is
+(`pickArtistOn` / `pickAlbumOn`, 6h; only matches are kept, a miss may be
+throttling) — and the **facts** one read of it gave (`artistFactsOn`: one
+`queryArtistOverview` → listeners + Top Songs; `albumFactsOn`: `getAlbum` →
+the tracks; 30 min). A request both memos can answer — and an image whose pick
+carries one — is served at once, without the queue, the spacing or a window.
+
+### Artist sections — About, Similar Artists, Stats, Photos, Concerts
+
+All from the same `queryArtistOverview` read as Top Songs and the monthly
+listeners. `artistFactsFromOverview` turns it into one facts object (listeners,
+followers, world rank, top cities, Top Songs, the bio as paragraphs, related
+artists, photos, concerts), and each section is a pure view of it
+(`bioSection`, `relatedSection`, `statsSection`, `photosSection`,
+`concertsSection`; `null` = nothing to show → `not_found`, and the tab hides).
+
+| Type | Kind | Notes |
+|---|---|---|
+| `artist_bio` "About" | rich_text | Second source next to Last.fm's (same id). The tab renders `summary` as sanitized HTML and never `full`, so the whole bio goes in `summary` as escaped `<p>` paragraphs, Spotify's internal `<a href=spotify:…>` links reduced to their text. |
+| `similar_artists` "Similar Artists" | entity_cards | Second source next to Last.fm's: Spotify's "Fans also like" (up to 20), no match %. The host draws each card from its own image cache by name. |
+| `spotify_artist_stats` | stat_grid | Monthly listeners, followers, world rank, top 5 cities (listeners each). |
+| `spotify_artist_photos` | image_gallery | The page's wide banner (2660px), the profile picture and the gallery. As a gallery it also reaches Now Playing's additional images and the cue-sheet context (the host adapts galleries as context images). The artist page's hero can't show the banner: it builds its background from the host's own image cache. |
+| `spotify_concerts` "Concerts" | entity_list | Upcoming dates: "Tue 8 Jun 2027 · City" (`concertDate`, the venue's own calendar day), the venue under it, each linking to Spotify's concert page. Venue names come as Spotify lists them (local script). |
+
+**One read per artist page.** Every artist section, Top Songs and listeners
+included, asks through `artistFactsLookup`: the memo first, else one
+`infoLookup` keyed `artist:<name>` — and `infoLookup` de-duplicates by key while
+a lookup runs, so the seven sections an artist page asks for at once share one
+window (`verify:all` → `plugin:artist-sections` asserts exactly one). Only the
+monthly listeners have a page fallback: when the direct read failed (not when
+throttled, signed out or busy), `lookupArtistListenersPage` reads the search page
+and the artist page as before; the other sections answer the error and the type's
+next provider answers.
+
+### Track credits (`spotify_track_credits`)
+
+A track page's **Credits** tab (key_value): `queryTrackCreditsGroupedModal`
+(`{ trackUri }` — the web player sends it only when "Show credits" is opened, so
+the hash comes from the JS-chunk scan) → `creditsFromTrack` (each role once, in
+Spotify's order, its names in the order listed, plus the label "sources") →
+`creditsSection`: one row per role ("Composers → A, B", "Lyricist → C",
+pluralised when several), then "Source → XL Recordings". A track credited only
+to its main artist has no tab (`not_found`). Track pages ask for plays and
+credits at once, so they are **one read** (`trackFactsLookup`, key
+`track:<artist>:<title>`, the same memo as the artists): pick
+(`pickTrackOn`) → `getTrack` (plays) → the credits query. A failed credits query
+leaves the plays standing (`creditsFailed`: that section answers "error"). The
+facts are remembered either way (30 min), so a track whose credits or lyrics
+keep failing isn't re-read on every visit; a response with no credits block is
+"no credits" (the tab hides), not a failure. A failed `getTrack` fails
+both — the plays then take their page fallback (`lookupTrackPlaysPage`: the
+search page, then the track page), the credits answer "error". No page fallback
+for the credits.
+
+### Lyrics (a source in the `lyrics` chain)
+
+The manifest declares the `lyrics` type, so Spotify is a row in Settings →
+Providers → Lyrics, after the user's own files, LRCLIB and Lyrics.ovh by default
+(it answers only when those have nothing, until the user moves it). The text is
+Spotify's: `GET spclient /color-lyrics/v2/track/{id}?format=json&vocalRemoval=false&market=from_token`
+with `app-platform: WebPlayer` (`scriptSpclient` / `directSpclient`; a 404 is "no
+lyrics"), licensed from Musixmatch — the attribution reads "Spotify (Musixmatch)".
+
+- **Synced only for the user's cut.** The host caches a synced lyric forever,
+  and Spotify's timings fit Spotify's release. So `lyricsValue` returns LRC only
+  when Spotify's length is within 2s of the entity's `durationSecs`
+  (`sameLength`, LRCLIB's window); a different length, or none given, gets the
+  words alone (plain, re-asked after the type's TTL). "♪" (Spotify's
+  instrumental mark) becomes a blank timed line in LRC and is dropped from the
+  words.
+- **The right release.** With a known length the pick prefers the release of the
+  same song (same artist, title scoring) whose length matches
+  (`pickTrackByLength`: the album cut over a remaster); search candidates carry
+  `durationMs` for this. The pick memo is keyed with the rounded length.
+- **Never a preview.** `lyricsFromColorLyrics` returns null unless `capStatus` is
+  absent or `"NONE"` — a capped answer (a free-tier preview) must not be cached as
+  the song's lyrics. (Observed: `"NONE"` with full `lines` on a Premium account;
+  `previewLines` is a separate five-line teaser, ignored.)
+- **One read per track page.** Lyrics are part of the track facts
+  (`trackFactsOn`: `getTrack` → credits → lyrics), so lyrics, plays and credits
+  share one window (`verify:all` → `plugin:lyrics`). A failed lyrics request
+  answers "error" (the chain moves on) until the facts' memo expires (30 min).
+- **Timed only when Spotify says so.** `syncType` must be `LINE_SYNCED` (or
+  `SYLLABLE_SYNCED`) and the lines must carry times; a missing or unknown
+  `syncType` gives plain words, never LRC with every line at 00:00.
+- **The length never buys a worse title.** `pickTrackByLength` considers only
+  candidates whose title scores as well as the plain pick's, so "Song (Acoustic)"
+  or a remix of the user's length never replaces an exact "Song" (whose synced
+  lyrics would then be cached for the original, for good).
+- Lyrics a provider answers stay in Vibo's cache: they are never written into the
+  user's files, and the Community plugin doesn't republish provider answers.
+
+### Image providers — artist photo, album cover
+
+`contributes.imageProviders` declares `artist` and `album`; `api.imageProviders.onFetch`
+answers the host's image chain (Settings → Providers, in the user's order — a
+new provider lands after the existing ones, so by default it fills the gaps the
+others leave). One direct search each: Spotify's search results already carry
+the 640px photo / cover, so `lookupArtistImage` / `lookupAlbumCover` are search
+→ pick (`pickArtistCandidate` / `pickAlbumCandidate`, the lookups' pickers:
+same name, and an album by that artist) → `{ status: "ok", url }` with
+`candidatesFromSearch`'s `imageUrl` (`visuals.avatarImage` / `coverArt`). The
+host downloads and stores the image. An album asked without an artist is
+`not_found` (nothing would confirm the pick); placeholder names never reach the
+plugin (the host skips them). No page fallback: the search page's candidates
+carry no image, so a failed direct search answers nothing and the chain asks
+the next provider.
+
+They run through the same paced queue as the other lookups (`infoLookup`), with
+a **deadline** (`IMAGE_LOOKUP_DEADLINE_MS`, 12s): the host waits 20s per
+provider, so a lookup still queued behind other Spotify work when that is
+nearly up answers "Spotify is busy" without opening a window, and the host
+moves on. A lookup that never started doesn't count toward the spacing.
+Measured: ~2.5s per image, plus the 4s spacing between lookups.
 
 ### Liked Songs import (`importLikedSongs`)
 

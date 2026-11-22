@@ -54,6 +54,25 @@ code)` inside the app's WebView. Consequences:
   `npm test` can pin it.
 - **No browser/Tauri dev harness exists** for plugins. The realistic dev loop is to
   install/symlink this folder into the host app and reload. See `DEVELOPING.md`.
+- **Prefer a direct read over a page scrape, and keep the scrape as its
+  fallback (owner decision, 2026-11-22).** Tracklists and song radio are read
+  from the web player's private endpoints inside the browse window
+  (`scriptDirectTracks` for tracklists and radio, `scriptPathfinder` for
+  Home, search and the catalog lookups); the page path runs only when that
+  fails. A fallback must re-navigate: the direct read may have moved the page
+  in-app (pushState) to get a session token.
+  New features that need Spotify data should follow the same pattern. The map
+  of those endpoints is **SpotAPI** (`github.com/Aran404/SpotAPI`) — see
+  `README.md` → *Spotify's private web-player API* for which files to read. It
+  is **GPL-3.0: read it, never copy from it.** Check a new endpoint live (a
+  scratch Playwright script on `scripts/.spotify-profile/`) before building on
+  it — SpotAPI can be stale, and some endpoints need a signed-in token.
+- **Two traps found while building the direct reads:** (1) the page's own
+  "Go to song radio" click calls `inspiredby-mix` too, so blocking that
+  endpoint in a test breaks the fallback as well; refuse the direct read by
+  its page size (`limit: 100`, which the page never sends) instead. (2) The
+  Liked Songs page never sends `fetchLibraryTracks`; its hash comes only from
+  the JS-chunk scan.
 
 ## Building UI
 
@@ -132,7 +151,7 @@ See `README.md` → *Develop & Release*. In short:
 
 ## Docs in this repo
 
-- `README.md` — install + release flow
+- `README.md` — install + release flow, and the SpotAPI reference for Spotify's private endpoints
 - `DEVELOPING.md` — plugin develop/debug workflow (sandbox, reload loop, DevTools, `api.log`)
 - `SPEC.md` — this plugin's scraping architecture
 - `jsguide.md` — DOM selectors / JS snippets used against the Spotify web app

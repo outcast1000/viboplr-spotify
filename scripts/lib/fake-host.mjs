@@ -30,12 +30,37 @@ function stubNamespace(overrides, path = []) {
   });
 }
 
-export async function startFakeHost(browserCtx, { debug = false } = {}) {
+// seedPlaylists: [{ id, name, kind? }] — saved playlists the plugin finds on
+// "disk" at activate (section "Verify", no cached tracks, so the first read of
+// each one goes to Spotify). Default: an empty first-run install.
+export async function startFakeHost(browserCtx, { debug = false, seedPlaylists = [] } = {}) {
+  const SEED_SECTION = "Verify";
+  const seedById = Object.fromEntries(seedPlaylists.map((p) => [p.id, p]));
+  const seededList = (path) => {
+    if (!seedPlaylists.length) return [];
+    if (path.length === 1 && path[0] === "playlists") return [{ name: SEED_SECTION, isDir: true }];
+    if (path.length === 2 && path[0] === "playlists" && path[1] === SEED_SECTION) {
+      return seedPlaylists.map((p) => ({ name: p.id, isDir: true }));
+    }
+    return [];
+  };
+  const seededJson = (path) => {
+    if (path.length !== 4 || path[0] !== "playlists" || path[1] !== SEED_SECTION) return null;
+    const p = seedById[path[2]];
+    if (!p) return null;
+    if (path[3] === "tracks.json") return [];
+    if (path[3] !== "meta.json") return null;
+    return { id: p.id, name: p.name, section: SEED_SECTION, description: "", coverFile: null, kind: p.kind || "playlist", tracksFetchedAt: null };
+  };
   const host = {
     infoHandlers: {},
     menuHandlers: {},
     toolHandlers: {},
     played: [],
+    backfills: [],
+    uiHandlers: {},
+    imageHandlers: {},
+    searchHandlers: {},
     events: [],
     windows: 0,
     pendingCloses: [],
@@ -98,7 +123,11 @@ export async function startFakeHost(browserCtx, { debug = false } = {}) {
       // which competes with the check for the single browse window.
       get: (key) => Promise.resolve(key === "spotify_browse_first_run_done" ? true : null),
       listCacheDirs: () => Promise.resolve([]),
-      files: stubNamespace({ list: () => Promise.resolve([]), exists: () => Promise.resolve(false) }),
+      files: stubNamespace({
+        list: (path) => Promise.resolve(seededList(path || [])),
+        readJson: (path) => Promise.resolve(seededJson(path || [])),
+        exists: () => Promise.resolve(false),
+      }),
     }),
     informationTypes: stubNamespace({
       onFetch: (id, h) => { host.infoHandlers[id] = h; return () => {}; },
@@ -107,13 +136,33 @@ export async function startFakeHost(browserCtx, { debug = false } = {}) {
       onAction: (id, h) => { host.menuHandlers[id] = h; return () => {}; },
       registerItem: (item) => { note("menu-item", item.id); return () => {}; },
     }),
+    imageProviders: stubNamespace({
+      onFetch: (entity, h) => { host.imageHandlers[entity] = h; return () => {}; },
+    }),
+    search: stubNamespace({
+      onQuery: (id, h) => { host.searchHandlers[id] = h; return () => {}; },
+    }),
     assistant: stubNamespace({
       onTool: (name, h) => { host.toolHandlers[name] = h; return () => {}; },
     }),
     playback: stubNamespace({
       playTracks: (tracks, startIndex, context) => { host.played.push({ tracks, startIndex, context }); note("play", { n: tracks.length, context }); },
+      // Like the host: the head plays at once, then resolveTail's tracks are
+      // appended. Resolves with how many landed; each play is recorded with its
+      // head and tail so a check can wait for the tail (host.backfills).
+      playWithBackfill: (opts) => {
+        const rec = { head: opts.head || [], context: opts.context, tail: null, error: null };
+        host.backfills.push(rec);
+        note("backfill-start", { head: rec.head.length, context: opts.context });
+        return Promise.resolve(opts.resolveTail()).then((tail) => {
+          rec.tail = tail || [];
+          note("backfill-tail", { n: rec.tail.length });
+          return rec.tail.length;
+        }, (e) => { rec.error = String(e); rec.tail = []; return 0; });
+      },
     }),
     ui: stubNamespace({
+      onAction: (id, h) => { host.uiHandlers[id] = h; return () => {}; },
       showNotification: (m) => note("notify", m),
       requestAction: (a, p) => note("request-action", { a, p }),
     }),
@@ -135,6 +184,22 @@ export async function startFakeHost(browserCtx, { debug = false } = {}) {
     const h = host.menuHandlers[id];
     if (!h) throw new Error(`plugin registered no menu action "${id}"`);
     return h(target);
+  };
+  // An image request the way the host's chain makes it: (name, artistName?).
+  host.image = (entity, name, artistName) => {
+    const h = host.imageHandlers[entity];
+    if (!h) throw new Error(`plugin registered no image provider for "${entity}"`);
+    return h(name, artistName);
+  };
+  host.uiAction = (id, data) => {
+    const h = host.uiHandlers[id];
+    if (!h) throw new Error(`plugin registered no ui action "${id}"`);
+    return h(data);
+  };
+  host.search = (providerId, query, limit) => {
+    const h = host.searchHandlers[providerId];
+    if (!h) throw new Error(`plugin registered no search provider "${providerId}"`);
+    return h(query, limit);
   };
   host.tool = (name, args) => {
     const h = host.toolHandlers[name];
