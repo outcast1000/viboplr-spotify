@@ -582,6 +582,26 @@ lyrics"), licensed from Musixmatch — the attribution reads "Spotify (Musixmatc
 - Lyrics a provider answers stay in Vibo's cache: they are never written into the
   user's files, and the Community plugin doesn't republish provider answers.
 
+### Now Playing info: "Plays (Spotify)"
+
+An item in Settings → Playback → Now playing info (`api.nowPlayingInfo`, id
+`spotify-plays`), **off by default**: "990k plays on Spotify" (`compactCount`, the same rounding
+and wording as Last.fm's "Plays (Last.fm)": "100k plays on Last.fm")
+under the title in the player bar / mini player. The host gives an item 5s per
+track, so `nowPlayingPlays` answers from the track memo at once when it can;
+otherwise it starts the usual per-track read (`trackPlaysLookup` — the one the
+track page and the lyrics share) and waits `NOW_PLAYING_WAIT_MS` (4.5s), then
+answers "empty" for that play while the read runs on and fills the memo.
+
+A cold read (a fresh hidden window, the sign-in check, the reads) rarely fits
+in 5s, so while the item is **in use** the plugin reads the **next song in the
+queue** while the current one plays (`lookAheadNextTrack`, 3s after
+`onTrackStarted`, via `api.playback.getQueue` — permission `playback:read`,
+added for this). "In use" = the host asked the item within the last 30 min:
+the host asks it only when the user switched it on, so nothing is looked ahead
+for anyone who never did. The same read also has the next song's credits and
+Spotify lyrics ready. `verify:all` → `plugin:now-playing`.
+
 ### Image providers — artist photo, album cover
 
 `contributes.imageProviders` declares `artist` and `album`; `api.imageProviders.onFetch`

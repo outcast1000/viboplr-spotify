@@ -244,6 +244,17 @@ test("sameLength / pickTrackByLength: the release with the user's length", () =>
   assert.notEqual(S.pickTrackByLength(cands, "Song", "Band", null, 240).id, "other");
 });
 
+test("compactCount: the Now Playing line's numbers", () => {
+  assert.equal(S.compactCount(990402), "990k");
+  assert.equal(S.compactCount(3267216368), "3.3B");
+  assert.equal(S.compactCount(1508), "1.5k");
+  assert.equal(S.compactCount(1000), "1k");
+  assert.equal(S.compactCount(46888176), "46.9M");
+  assert.equal(S.compactCount(999950), "1M", "never \"1000K\"");
+  assert.equal(S.compactCount(842), "842");
+  assert.equal(S.compactCount(0), "0");
+});
+
 test("concertDate: the venue's own calendar day", () => {
   assert.equal(S.concertDate("2027-06-08T19:00+09:00"), "Tue 8 Jun 2027");
   assert.equal(S.concertDate("2026-12-31T23:30-08:00"), "Thu 31 Dec 2026");

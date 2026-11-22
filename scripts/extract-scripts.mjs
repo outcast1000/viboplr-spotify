@@ -63,6 +63,7 @@ export function extractScripts(indexPath) {
     sameLength: sandbox.sameLength,
     pickTrackByLength: sandbox.pickTrackByLength,
     scriptSpclient: sandbox.scriptSpclient,
+    compactCount: sandbox.compactCount,
     homeVars: sandbox.homeVars,
     shelvesFromHome: sandbox.shelvesFromHome,
     mapTrackRow: sandbox.mapTrackRow,

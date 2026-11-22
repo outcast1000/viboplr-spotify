@@ -2904,6 +2904,26 @@ function activate(api) {
     return durationSecs > 0 && durationMs > 0 && Math.abs(durationMs / 1000 - durationSecs) <= 2;
   }
 
+  // -- Now Playing info --
+
+  // 990402 → "990k", 3267216368 → "3.3B", 1508 → "1.5k", 842 → "842" — the
+  // Last.fm plugin's own compactCount ("100k plays on Last.fm"), so the two
+  // Plays items read alike.
+  function compactCount(n) {
+    if (!(n > 0)) return "0";
+    var units = [[1e9, "B"], [1e6, "M"], [1e3, "k"]];
+    for (var i = 0; i < units.length; i++) {
+      if (n >= units[i][0]) {
+        var v = n / units[i][0];
+        var t = v >= 100 ? String(Math.round(v)) : (Math.round(v * 10) / 10).toFixed(1).replace(/\.0$/, "");
+        // 999,950 rounds to "1000K": say "1M" instead.
+        if (t === "1000" && i < units.length && i > 0) return "1" + units[i - 1][1];
+        return t + units[i][1];
+      }
+    }
+    return String(Math.round(n));
+  }
+
   // -- Home --
 
   // The music-chip home, as the web player asks for it. timeZone and sp_t are
@@ -5915,6 +5935,71 @@ function activate(api) {
         return lookupAlbumCover(name, artistName);
       }, { deadlineMs: IMAGE_LOOKUP_DEADLINE_MS }).then(imageAnswer);
     });
+  }
+
+  // ---- Now Playing info: "Plays (Spotify)" ----
+  //
+  // The cycling line under the title (Settings → Playback → Now playing info),
+  // off by default. The host gives an item 5s per track, so: a track the
+  // memo already knows answers at once; otherwise the usual per-track read
+  // (trackPlaysLookup — the one the track page and the lyrics share, so a
+  // lyrics lookup for the same song is the same read) is started and waited
+  // for up to NOW_PLAYING_WAIT_MS. Past that the item is "empty" for this
+  // play, but the read runs on and fills the memo: the next time the song
+  // comes up, the count is there at once.
+  var NOW_PLAYING_WAIT_MS = 4500;
+  // A cold read (a fresh hidden window + the reads) rarely fits in 5s, so the
+  // next song in the queue is looked up while this one plays — but only while
+  // the item is in use: the host asks it only when the user switched it on, so
+  // an ask within NOW_PLAYING_ACTIVE_MS says it is. Nothing is looked ahead
+  // for a user who never turned it on.
+  var NOW_PLAYING_ACTIVE_MS = 30 * 60 * 1000;
+  var NOW_PLAYING_LOOKAHEAD_DELAY_MS = 3000;
+  var nowPlayingAskedAt = 0;
+
+  function lookAheadNextTrack() {
+    if (Date.now() - nowPlayingAskedAt > NOW_PLAYING_ACTIVE_MS) return;
+    if (!api.playback || typeof api.playback.getQueue !== "function") return;
+    Promise.resolve(api.playback.getQueue()).then(function (q) {
+      var next = q && q.tracks && typeof q.index === "number" ? q.tracks[q.index + 1] : null;
+      if (!next || !next.title || !next.artist_name) return;
+      var dur = next.duration_secs > 0 ? next.duration_secs : null;
+      if (memoTrackFacts(next.title, next.artist_name, dur)) return;
+      dbg("now-playing", "looking ahead: " + next.title + " — " + next.artist_name);
+      return trackPlaysLookup(next.title, next.artist_name, dur);
+    }).then(null, function (e) { console.error("[spotify] now-playing look-ahead failed:", e); });
+  }
+
+  function nowPlayingPlays(track) {
+    nowPlayingAskedAt = Date.now();
+    var title = track && track.title;
+    var artist = track && track.artist_name;
+    if (!title || !artist) return Promise.resolve({ status: "empty" });
+    var dur = track.duration_secs > 0 ? track.duration_secs : null;
+    var known = memoTrackFacts(title, artist, dur);
+    if (known) {
+      return Promise.resolve(known.plays != null
+        ? { status: "ok", text: compactCount(known.plays) + " plays on Spotify" }
+        : { status: "empty" });
+    }
+    var lookup = trackPlaysLookup(title, artist, dur).then(function (r) {
+      return r.status === "ok"
+        ? { status: "ok", text: compactCount(r.value.plays) + " plays on Spotify" }
+        : { status: "empty" };
+    }, function (e) {
+      console.error("[spotify] now-playing plays failed:", e);
+      return { status: "empty" };
+    });
+    return Promise.race([lookup, waitMs(NOW_PLAYING_WAIT_MS).then(function () { return { status: "empty" }; })]);
+  }
+
+  if (api.nowPlayingInfo && typeof api.nowPlayingInfo.registerItem === "function") {
+    api.nowPlayingInfo.registerItem({ id: "spotify-plays", label: "Plays (Spotify)", priority: 110, defaultEnabled: false });
+    api.nowPlayingInfo.onFetch("spotify-plays", nowPlayingPlays);
+    // After this song's own lookups had their turn, read the next one.
+    if (api.playback && typeof api.playback.onTrackStarted === "function") {
+      api.playback.onTrackStarted(function () { setTimeout(lookAheadNextTrack, NOW_PLAYING_LOOKAHEAD_DELAY_MS); });
+    }
   }
 
   // ---- Song search (view box + Cmd+K provider) ----

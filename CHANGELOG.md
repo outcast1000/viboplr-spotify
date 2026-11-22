@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.29.0
+- **Spotify play counts in Now Playing.** A new item, **Plays (Spotify)**, for the line under the song title (Settings → Playback → Now playing info): "990k plays on Spotify". It is off until you switch it on. While it's on, the plugin looks up the next song in your queue while the current one plays, so the count is there when the song starts — which is what the new "what's playing and what's queued" permission is for. The same lookup also has that song's credits and Spotify lyrics ready.
+- Counts are written like Last.fm's ("100k plays on Last.fm"), so the two read alike.
+
 ## v1.28.0
 - **Much faster.** Playlists, albums, Liked Songs, song radio, search, Home and the play-count / listener lookups now read Spotify's data directly, the way Spotify's own web player does, instead of scrolling and reading its pages: 990 Liked Songs in about 4 seconds instead of nearly a minute, a song radio in about 1 second instead of a page load and two clicks, a whole Sync in about 4 seconds. Long playlists load in full instead of stopping partway. If a direct read fails, the old page reading takes over, so nothing is lost when Spotify changes something.
 - **Artist and album images.** Spotify is now an image provider for artist photos and album covers (Settings → Providers). It is added after your existing providers, so by default it fills the gaps they leave.

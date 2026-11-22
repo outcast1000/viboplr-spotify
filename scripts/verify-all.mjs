@@ -581,6 +581,51 @@ const CHECKS = [
     },
   },
   {
+    id: "plugin:now-playing",
+    protects: "The \"Plays (Spotify)\" Now Playing info item (nowPlayingPlays): within the host's 5s, instant once known",
+    async run({ pluginHost }) {
+      const host = await pluginHost();
+      const item = host.nowPlayingItems["spotify-plays"];
+      need(item && item.label === "Plays (Spotify)" && item.defaultEnabled === false, `item not registered as expected: ${JSON.stringify(item)}`);
+      // A song nobody asked about yet in this run, as the host passes it.
+      const track = { title: "Hounds of Love", artist_name: "Kate Bush", album_title: "Hounds of Love", duration_secs: 183 };
+      const t0 = Date.now();
+      const first = await host.nowPlaying("spotify-plays", track);
+      const firstMs = Date.now() - t0;
+      need(firstMs < 5000, `first answer took ${firstMs}ms — past the host's 5s, the item would be dropped`);
+      // The read runs on even when the first answer came back empty (an ask
+      // meanwhile joins it rather than starting another): wait for it to land.
+      let landed = first;
+      for (let i = 0; i < 20 && landed.status !== "ok"; i++) {
+        await sleep(1000);
+        landed = await host.nowPlaying("spotify-plays", track);
+      }
+      need(landed.status === "ok" && /^[\d.]+[kMB]? plays on Spotify$/.test(landed.text), `no plays line: ${JSON.stringify(landed)}`);
+      // Now the song is known: the next ask (the song playing again) must come
+      // from memory, well inside the 5s.
+      const t1 = Date.now();
+      const again = await host.nowPlaying("spotify-plays", track);
+      const againMs = Date.now() - t1;
+      need(again.status === "ok" && againMs < 200, `a known song took ${againMs}ms (${again.status}) — it should come from memory`);
+      // Look-ahead: with the item in use, the next queued song is read while
+      // this one plays, so it is known by the time it starts (a cold read
+      // rarely fits in the host's 5s).
+      const next = { title: "Running Up That Hill (A Deal With God)", artist_name: "Kate Bush", album_title: "Hounds of Love", duration_secs: 300 };
+      host.queue = { tracks: [track, next], index: 0 };
+      host.startTrack(track);
+      let ready = null;
+      for (let i = 0; i < 30; i++) {
+        await sleep(1000);
+        const t2 = Date.now();
+        const r = await host.nowPlaying("spotify-plays", next);
+        if (r.status === "ok" && Date.now() - t2 < 200) { ready = r; break; }
+      }
+      need(ready, "the next queued song wasn't looked up ahead (lookAheadNextTrack)");
+      return `cold: ${first.status} in ${firstMs}ms; then "${again.text}" from memory in ${againMs}ms; ` +
+        `next in queue read ahead: "${ready.text}"`;
+    },
+  },
+  {
     id: "plugin:images",
     protects: "Artist photo / album cover image providers (api.imageProviders: lookupArtistImage, lookupAlbumCover)",
     async run({ pluginHost }) {

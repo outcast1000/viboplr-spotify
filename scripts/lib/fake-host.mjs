@@ -60,6 +60,10 @@ export async function startFakeHost(browserCtx, { debug = false, seedPlaylists =
     backfills: [],
     uiHandlers: {},
     imageHandlers: {},
+    nowPlayingItems: {},
+    queue: { tracks: [], index: 0 },
+    trackStartedHandlers: [],
+    nowPlayingHandlers: {},
     searchHandlers: {},
     events: [],
     windows: 0,
@@ -136,6 +140,10 @@ export async function startFakeHost(browserCtx, { debug = false, seedPlaylists =
       onAction: (id, h) => { host.menuHandlers[id] = h; return () => {}; },
       registerItem: (item) => { note("menu-item", item.id); return () => {}; },
     }),
+    nowPlayingInfo: stubNamespace({
+      registerItem: (item) => { host.nowPlayingItems[item.id] = item; return () => {}; },
+      onFetch: (id, h) => { host.nowPlayingHandlers[id] = h; return () => {}; },
+    }),
     imageProviders: stubNamespace({
       onFetch: (entity, h) => { host.imageHandlers[entity] = h; return () => {}; },
     }),
@@ -146,6 +154,10 @@ export async function startFakeHost(browserCtx, { debug = false, seedPlaylists =
       onTool: (name, h) => { host.toolHandlers[name] = h; return () => {}; },
     }),
     playback: stubNamespace({
+      // The queue the plugin reads (host.queue = { tracks, index }) and the
+      // track-start event (host.startTrack(track) fires it).
+      getQueue: () => host.queue,
+      onTrackStarted: (h) => { host.trackStartedHandlers.push(h); return () => {}; },
       playTracks: (tracks, startIndex, context) => { host.played.push({ tracks, startIndex, context }); note("play", { n: tracks.length, context }); },
       // Like the host: the head plays at once, then resolveTail's tracks are
       // appended. Resolves with how many landed; each play is recorded with its
@@ -190,6 +202,13 @@ export async function startFakeHost(browserCtx, { debug = false, seedPlaylists =
     const h = host.imageHandlers[entity];
     if (!h) throw new Error(`plugin registered no image provider for "${entity}"`);
     return h(name, artistName);
+  };
+  host.startTrack = (track) => { for (const h of host.trackStartedHandlers) h(track); };
+  // A Now Playing info item, asked the way the host asks: (PluginTrack).
+  host.nowPlaying = (id, track) => {
+    const h = host.nowPlayingHandlers[id];
+    if (!h) throw new Error(`plugin registered no now-playing item "${id}"`);
+    return h(track);
   };
   host.uiAction = (id, data) => {
     const h = host.uiHandlers[id];
