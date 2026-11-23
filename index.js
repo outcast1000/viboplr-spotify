@@ -15,6 +15,16 @@ function activate(api) {
   // track fetch overlapping an auto-refresh) is rejected rather than stranding
   // the first window and wedging the UI.
   var windowBusy = false;
+  // Who holds the window while windowBusy: { yields, evict }. A background
+  // open (an info lookup, the prefetch) yields it to a user's open, which
+  // evicts it instead of being refused "Spotify is busy" — a look-ahead's
+  // cold window takes ~12s to load, so refusing clicks for it bit often.
+  // Cancel paths clear it with windowBusy, so a cancelled flow's late cleanup
+  // can't free a window someone else has taken since.
+  var windowHolder = null;
+  // How an evicted flow fails: the same "never started" busy infoLookup
+  // already treats as no answer (not "not found", no fallback lookup).
+  var WINDOW_TAKEN = "Spotify is busy";
   // Background lookups (info sections) that found Spotify signed out stop
   // opening windows until this time; any confirmed login clears it. This is
   // only a retry throttle — what the UI shows is `auth` below.
@@ -1449,6 +1459,7 @@ function activate(api) {
     if (activeScrapeHandle) { activeScrapeHandle.close().catch(function () {}); activeScrapeHandle = null; }
     if (dbgTest.handle) { dbgTest.handle.close().catch(function () {}); dbgTest.handle = null; }
     windowBusy = false;
+    windowHolder = null;
   };
 
   var DBG_STEPS = [
@@ -3946,14 +3957,22 @@ function activate(api) {
   //            reading rejects with SIGNED_OUT instead, and a login check that
   //            never settles rejects after QUIET_LOGIN_BUDGET_MS. A non-quiet
   //            open gets LOGIN_BUDGET_MS while its window is still hidden.
+  //   yields:  give the window up to a user's (non-quiet) open, which closes
+  //            this one and fails it with WINDOW_TAKEN. Default: quiet.
+  //            syncPlaylists' first-run sync is quiet but must not yield.
   function withSpotifyWindow(opts, fn) {
     var url = (opts && opts.url) || MUSIC_CHIP_URL;
     var visible = !!(opts && opts.visible);
     var quiet = !!(opts && opts.quiet);
+    var yields = opts && opts.yields != null ? !!opts.yields : quiet;
 
-    // Reject a concurrent open instead of clobbering the in-flight one. The
-    // single global scrapeGeneration / activeScrapeHandle can only track one
-    // window safely.
+    // One window at a time: the single global scrapeGeneration /
+    // activeScrapeHandle can only track one. A user's open takes it from a
+    // background one; any other concurrent open is refused.
+    if (windowBusy && !quiet && windowHolder && windowHolder.yields) {
+      plog("info", "window", "taking the Spotify window from a background lookup");
+      windowHolder.evict(); // synchronous: its cleanup frees the window
+    }
     if (windowBusy) {
       return Promise.reject(new Error("Spotify is busy — try again in a moment"));
     }
@@ -3965,13 +3984,16 @@ function activate(api) {
       var loginTimer = null;
       var settled = false;
       var currentHandler = null;
+      var me = { yields: yields, evict: function () { failWith(new Error(WINDOW_TAKEN)); } };
+      windowHolder = me;
 
       function cleanup() {
         if (loginTimer) { clearInterval(loginTimer); loginTimer = null; }
+        if (activeScrapeHandle === handle) activeScrapeHandle = null;
         if (handle) { handle.close().catch(console.error); handle = null; }
-        activeScrapeHandle = null;
-        // Release the single-window gate so the next action can open one.
-        windowBusy = false;
+        // Release the single-window gate so the next action can open one —
+        // unless a Cancel already did and someone else holds it now.
+        if (windowHolder === me) { windowHolder = null; windowBusy = false; }
       }
       function finish(val) {
         if (settled) return;
@@ -4006,6 +4028,13 @@ function activate(api) {
         height: 900,
         visible: visible,
       }).then(function (h) {
+        // Evicted or cancelled while the window was opening: it is no longer
+        // ours to use — close it before it can claim activeScrapeHandle.
+        if (settled || gen !== scrapeGeneration) {
+          h.close().catch(console.error);
+          if (!settled) finish(null);
+          return;
+        }
         handle = h;
         activeScrapeHandle = h;
         recordPageVisit(url, "open");
@@ -4116,7 +4145,9 @@ function activate(api) {
   //          a signed-out page rejects with SIGNED_OUT instead.
   function syncPlaylists(visible, trigger, quiet) {
     beginReport(trigger || "sync");
-    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible, quiet: !!quiet }, function (h, ctx) {
+    // yields: false — a first-run sync is quiet, but it is the sync, not a
+    // lookup that can simply be asked again later.
+    return withSpotifyWindow({ url: MUSIC_CHIP_URL, visible: visible, quiet: !!quiet, yields: false }, function (h, ctx) {
       return new Promise(function (resolve) {
         // Give the SPA a moment to render the home shell before scraping.
         var done = false;
@@ -4295,8 +4326,15 @@ function activate(api) {
         function settle(tracks, descr, coverUrl) {
           if (settled) return;
           settled = true;
-          delete state.tracksLoading[pl.id];
           if (trackTimeout) { clearTimeout(trackTimeout); trackTimeout = null; }
+          // Cancelled, or its window taken by a user's open (often a read of
+          // this same playlist): the result is no longer ours to write. Touch
+          // nothing — writing oldTracks here put a stale list back over the
+          // fresh read, stamped fresh for another 24h (or an empty one when
+          // nothing was cached), and cleared the new read's loading flag.
+          // The withSpotifyWindow promise has already settled.
+          if (ctx.isStale()) { resolve(oldTracks); return; }
+          delete state.tracksLoading[pl.id];
           var finalTracks = tracks;
           // Keep-old guard: don't let an empty scrape clobber tracks we had.
           // We deliberately do NOT stamp tracksFetchedAt here, so the cache stays
@@ -4659,6 +4697,7 @@ function activate(api) {
       activeScrapeHandle = null;
     }
     windowBusy = false;
+    windowHolder = null;
     state.status = "idle";
     state.syncStage = "";
     state.refreshing = false;
@@ -5377,6 +5416,7 @@ function activate(api) {
       hideModal();
       var m = (e && e.message) || String(e);
       console.error("Play the Full Album (Spotify) failed:", e);
+      plog("warn", "album", "Play the Full Album failed: " + m);
       api.ui.showNotification(m.indexOf("busy") !== -1
         ? "Spotify is busy — try again in a moment."
         : "Couldn't load the album from Spotify: " + m);
@@ -6196,6 +6236,7 @@ function activate(api) {
       activeScrapeHandle = null;
     }
     windowBusy = false;
+    windowHolder = null;
     state.search = { query: "", status: "idle", tracks: [], error: "" };
     render();
   }
@@ -6544,8 +6585,9 @@ function activate(api) {
     if (!canImportLikes || state.likedImporting) return;
     // Check the single-window gate BEFORE beginReport: withSpotifyWindow would
     // reject as busy anyway, but by then beginReport would have clobbered the
-    // running sync's active diagnostics report.
-    if (windowBusy) {
+    // running sync's active diagnostics report. A background lookup holding
+    // the window is no reason to refuse: the import's open takes it over.
+    if (windowBusy && !(windowHolder && windowHolder.yields)) {
       state.likedImportError = "Spotify is busy — try again in a moment";
       renderSettings();
       return;

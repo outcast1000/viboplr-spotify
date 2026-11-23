@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.29.2
+- **Fix: "Spotify is busy" when you click.** The plugin reads Spotify through one hidden window, and with **Plays (Spotify)** on it looks up your next song in the background, which keeps that window busy for about 12 seconds at a time. **Play the Full Album**, search, opening a playlist and the other things you start yourself were turned away if they arrived during a lookup. They now take the window over: the background lookup stops and is simply asked again the next time it's needed. Something else you started (a sync, a search) still says "Spotify is busy".
+- **Fix:** a playlist read that was cancelled could, about 45 seconds later, put that playlist's older track list back and mark it as fresh, so it stayed out of date for a day (or showed empty when nothing was cached).
+- A failed **Play the Full Album** is now written to the plugin's log (Debug tab), not just the console.
+
 ## v1.29.1
 - **Start radio** and **Play the Full Album** now say which shared action they are, so Viboplr groups them with its own and other plugins' versions in one menu row ("Start radio ▸ Library / Last.fm / Spotify") instead of listing them side by side. Older Viboplr versions show the menu as before.
 
