@@ -6040,7 +6040,9 @@ function activate(api) {
   }
 
   if (api.nowPlayingInfo && typeof api.nowPlayingInfo.registerItem === "function") {
-    api.nowPlayingInfo.registerItem({ id: "spotify-plays", label: "Plays (Spotify)", priority: 110, defaultEnabled: false });
+    // kind "stat": the host styles it like its other play counts (and
+    // Last.fm's). Older hosts ignore the field.
+    api.nowPlayingInfo.registerItem({ id: "spotify-plays", label: "Plays (Spotify)", priority: 110, defaultEnabled: false, kind: "stat" });
     api.nowPlayingInfo.onFetch("spotify-plays", nowPlayingPlays);
     // After this song's own lookups had their turn, read the next one.
     if (api.playback && typeof api.playback.onTrackStarted === "function") {

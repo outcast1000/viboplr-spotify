@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.29.3
+- **Plays (Spotify)** in Now Playing now looks like Viboplr's other play counts: the accent colour, and shown once as each song starts (like Last.fm's) — change how long it stays in Settings → Playback → Now playing info. Needs a Viboplr version that knows item kinds; older ones show it as before.
+
 ## v1.29.2
 - **Fix: "Spotify is busy" when you click.** The plugin reads Spotify through one hidden window, and with **Plays (Spotify)** on it looks up your next song in the background, which keeps that window busy for about 12 seconds at a time. **Play the Full Album**, search, opening a playlist and the other things you start yourself were turned away if they arrived during a lookup. They now take the window over: the background lookup stops and is simply asked again the next time it's needed. Something else you started (a sync, a search) still says "Spotify is busy".
 - **Fix:** a playlist read that was cancelled could, about 45 seconds later, put that playlist's older track list back and mark it as fresh, so it stayed out of date for a day (or showed empty when nothing was cached).
